@@ -1,13 +1,29 @@
 use std::fmt::Display;
 use bitflags::bitflags;
+use rand::Rng;
 
 bitflags! {
     pub struct OpenFlag: u32 {
-        const O_RNONLY = 0b0001;
+        const O_RDONLY = 0b0001;
         const O_WRONLY = 0b0010;
-        const O_APPEND  = 0b0100;
+        const O_RDWR = 0b0100;
         const O_CREAT  = 0b1000;
     }
+}
+
+impl OpenFlag {
+    pub fn check_mode_exclusiveness(&self) -> bool {
+        let exclusive_flags = Self::O_RDONLY.bits() | Self::O_RDWR.bits() | Self::O_WRONLY.bits();
+        let and_flag = self.bits() & exclusive_flags;
+
+        and_flag.count_ones() == 1
+    }
+}
+
+pub enum SeekFlag {
+    SEEK_CUR,
+    SEEK_END,
+    SEEK_SET,
 }
 
 #[derive(Debug)]
@@ -17,10 +33,17 @@ pub struct MemFSErr {
 }
 
 #[derive(Debug)]
-enum MemFSErrType {
+pub enum MemFSErrType {
     PoisonedLock,
     ENOENT,
-    Misc
+    EBADF,
+    EISDIR,
+    ENOTDIR,
+    EEXIST,
+    EFAULT,
+    EINVAL,
+    ENOTEMPTY,
+    Misc,
 }
 
 impl Display for MemFSErr {
@@ -45,6 +68,55 @@ impl MemFSErr {
         }
     }
 
+    pub fn bad_file_descriptor() -> Self {
+        Self {
+            message: "Not a file descriptor".to_string(),
+            err_type: MemFSErrType::EBADF,
+        }
+    }
+
+    pub fn is_directory() -> Self {
+        Self {
+            message: "Is a directory".to_string(),
+            err_type: MemFSErrType::EISDIR,
+        }
+    }
+
+    pub fn is_not_directory() -> Self {
+        Self {
+            message: "Is not a directory".to_string(),
+            err_type: MemFSErrType::ENOTDIR,
+        }
+    }
+
+    pub fn bad_memory_access() -> Self {
+        Self {
+            message: "Bad memory access".to_string(),
+            err_type: MemFSErrType::EFAULT,
+        }
+    }
+
+    pub fn already_exists() -> Self {
+        Self {
+            message: "An entry with name already exists".to_string(),
+            err_type: MemFSErrType::EEXIST,
+        }
+    }
+
+    pub fn invalid_value() -> Self {
+        Self {
+            message: "Invalid value".to_string(),
+            err_type: MemFSErrType::EINVAL,
+        }
+    }
+
+    pub fn is_not_empty() -> Self {
+        Self {
+            message: "Directory is not empty".to_string(),
+            err_type: MemFSErrType::ENOTEMPTY,
+        }
+    }
+
     pub fn poisoned_lock() -> Self {
         Self {
             message: "Lock poison error".to_string(),
@@ -54,3 +126,8 @@ impl MemFSErr {
 }
 
 pub type Result<T> = std::result::Result<T, MemFSErr>;
+
+pub fn generate_random_vector(capacity: usize) -> Vec<u8> {
+    let mut rng = rand::rng();
+    (0..capacity).map(|_| { rng.random::<u8>()}).collect()
+}

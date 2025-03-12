@@ -1,10 +1,7 @@
-use memfs::memfs::MemFS;
+use memfs::{memfs::MemFS, utils::OpenFlag};
 
 fn main() {
     let fs = MemFS::new();
 
-    fs.create("/mit").unwrap();
-    fs.open("/mit", None).unwrap();
-
-    fs.create("/mit").unwrap();
+    fs.open("/mit", OpenFlag::O_RDONLY).unwrap();
 }

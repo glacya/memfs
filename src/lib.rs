@@ -1,2 +1,2 @@
 pub mod memfs;
-mod utils;
+pub mod utils;
