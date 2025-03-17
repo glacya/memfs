@@ -1,13 +1,15 @@
-use std::fmt::Display;
 use bitflags::bitflags;
 use rand::Rng;
+use std::fmt::Display;
 
 bitflags! {
+    #[derive(Clone)]
     pub struct OpenFlag: u32 {
-        const O_RDONLY = 0b0001;
-        const O_WRONLY = 0b0010;
-        const O_RDWR = 0b0100;
+        const O_RDONLY = 0b1;
+        const O_WRONLY = 0b10;
+        const O_RDWR = 0b100;
         const O_CREAT  = 0b1000;
+        const O_EXCL = 0b10000;
     }
 }
 
@@ -20,6 +22,7 @@ impl OpenFlag {
     }
 }
 
+#[allow(non_camel_case_types)]
 pub enum SeekFlag {
     SEEK_CUR,
     SEEK_END,
@@ -39,7 +42,7 @@ pub enum MemFSErrType {
 
     /// Used when there is no entry with the given name.
     ENOENT,
-    
+
     /// Used when there is already an entry with the given name.
     EEXIST,
 
@@ -49,7 +52,7 @@ pub enum MemFSErrType {
 
     /// Used when the target should be a file, but is a directory.
     EISDIR,
-    
+
     /// Used when the target should be a directory, but is a file.
     ENOTDIR,
 
@@ -150,5 +153,5 @@ pub type Result<T> = std::result::Result<T, MemFSErr>;
 
 pub fn generate_random_vector(capacity: usize) -> Vec<u8> {
     let mut rng = rand::rng();
-    (0..capacity).map(|_| { rng.random::<u8>()}).collect()
+    (0..capacity).map(|_| rng.random::<u8>()).collect()
 }
