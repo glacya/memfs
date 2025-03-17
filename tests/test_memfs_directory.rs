@@ -2,7 +2,7 @@ use memfs::memfs::MemFS;
 use memfs::utils::{generate_random_vector, MemFSErrType, OpenFlag};
 
 #[test]
-fn memfs_mkdir() {
+fn test_should_success_on_simple_mkdir() {
     let fs = MemFS::new();
 
     let result = fs.mkdir("/test_dir");
@@ -11,7 +11,7 @@ fn memfs_mkdir() {
 }
 
 #[test]
-fn memfs_mkdir_nonexistent_directory() {
+fn test_should_fail_when_mkdir_on_nonexistent_path() {
     let fs = MemFS::new();
 
     let result = fs.mkdir("/nonexistent/dir");
@@ -22,7 +22,7 @@ fn memfs_mkdir_nonexistent_directory() {
 }
 
 #[test]
-fn memfs_rmdir_empty_directory() {
+fn test_should_success_when_rmdir_on_existing_path() {
     let fs = MemFS::new();
 
     let mkdir_result = fs.mkdir("/dir1");
@@ -35,15 +35,17 @@ fn memfs_rmdir_empty_directory() {
 }
 
 #[test]
-fn memfs_rmdir_nonempty_directory_should_err() {
+fn test_should_fail_when_rmdir_on_nonempty_path() {
     let fs = MemFS::new();
 
+    // Create some directories, and a file.
     fs.mkdir("/dir1").unwrap();
     fs.mkdir("/dir1/dir2").unwrap();
     fs.mkdir("/dir1/dir3").unwrap();
     let fd = fs.open("/dir1/dir2/quack.duck", OpenFlag::O_CREAT | OpenFlag::O_RDONLY).unwrap();
     fs.close(fd).unwrap();
 
+    // Try rmdir on directories.
     let empty_rmdir = fs.rmdir("/dir1/dir3");
     let nonempty_rmdir1 = fs.rmdir("/dir1");
     let nonempty_rmdir2 = fs.rmdir("/dir1/dir2");
@@ -52,6 +54,7 @@ fn memfs_rmdir_nonempty_directory_should_err() {
     assert!(nonempty_rmdir1.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOTEMPTY)}));
     assert!(nonempty_rmdir2.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOTEMPTY)}));
 
+    // Try again after removing a file.
     fs.remove("/dir1/dir2/quack.duck").unwrap();
     
     let now_rmdir1 = fs.rmdir("/dir1/dir2");
@@ -62,36 +65,39 @@ fn memfs_rmdir_nonempty_directory_should_err() {
 }
 
 #[test]
-fn memfs_mkdir_with_existing_file_name_should_err() {
+fn test_should_fail_on_mkdir_with_existing_file_name() {
     let fs = MemFS::new();
+    let file_name = "/noodle";
 
-    let fd = fs.open("/noodle", OpenFlag::O_CREAT | OpenFlag::O_RDONLY).unwrap();
+    let fd = fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_RDONLY).unwrap();
     fs.close(fd).unwrap();
 
     let mkdir_with_existing_file_name = fs.mkdir("/noodle");
     assert!(mkdir_with_existing_file_name.is_err_and(|e| { matches!(e.err_type, MemFSErrType::EEXIST)}));
 
-    fs.remove("/noodle").unwrap();
+    fs.remove(file_name).unwrap();
 
     let mkdir_after_remove = fs.mkdir("/noodle");
     assert!(mkdir_after_remove.is_ok());
 }
 
 #[test]
-fn memfs_rmdir_on_file_should_err() {
+fn test_should_fail_when_rmdir_on_file() {
     let fs = MemFS::new();
+    let file_name = "/imfile";
 
-    let fd = fs.open("/imfile", OpenFlag::O_CREAT | OpenFlag::O_RDONLY).unwrap();
+    let fd = fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_RDONLY).unwrap();
     fs.close(fd).unwrap();
 
-    let rmdir_on_file = fs.rmdir("/imfile");
+    let rmdir_on_file = fs.rmdir(file_name);
+    
     assert!(rmdir_on_file.is_err_and(|e| {
         matches!(e.err_type, MemFSErrType::ENOTDIR)
     }));
 }
 
 #[test]
-fn memfs_mkdir_and_rmdir_with_tremendous_levels() {
+fn test_should_succeed_on_repeated_mkdir_and_rmdir_with_tremendous_levels() {
     let fs = MemFS::new();
     let loops = 256;
     let numbers = generate_random_vector(loops);
@@ -104,7 +110,7 @@ fn memfs_mkdir_and_rmdir_with_tremendous_levels() {
         assert!(mkdir_result.is_ok());
     }
 
-    // Remove the spire.
+    // Remove the spire from the deepest to the shallowest.
     for i in (0..loops).rev() {
         let dir_name: String = numbers[0..(i + 1)].iter().map(|v| { std::fmt::format(format_args!("/{}", v))}).collect();
 

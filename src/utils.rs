@@ -34,15 +34,36 @@ pub struct MemFSErr {
 
 #[derive(Debug)]
 pub enum MemFSErrType {
+    /// Used on poisoned lock error.
     PoisonedLock,
+
+    /// Used when there is no entry with the given name.
     ENOENT,
-    EBADF,
-    EISDIR,
-    ENOTDIR,
+    
+    /// Used when there is already an entry with the given name.
     EEXIST,
+
+    /// Used when the given usize integer is not a valid file descriptor,
+    /// or the file descriptor is not opened with appropriate read/write privilege.
+    EBADF,
+
+    /// Used when the target should be a file, but is a directory.
+    EISDIR,
+    
+    /// Used when the target should be a directory, but is a file.
+    ENOTDIR,
+
+    /// Used on memory fault, such as out of bound error.
     EFAULT,
+
+    /// Used when the provided value is invalid.
+    /// It is used on open flag.
     EINVAL,
+
+    /// Used when directory is not empty.
     ENOTEMPTY,
+
+    /// Miscellaneous
     Misc,
 }
 

@@ -3,7 +3,7 @@ use memfs::utils::{generate_random_vector, MemFSErrType, OpenFlag, SeekFlag};
 use rand::Rng;
 
 #[test]
-fn memfs_create_file() {
+fn test_should_succeed_when_creating_file() {
     // Arrange
     let fs = MemFS::new();
 
@@ -15,7 +15,7 @@ fn memfs_create_file() {
 }
 
 #[test]
-fn memfs_open_nonexistent_file_without_o_creat() {
+fn test_should_fail_when_opening_nonexistent_file_without_o_creat() {
     let fs = MemFS::new();
 
     let open_result = fs.open("/create_file.sh", OpenFlag::O_RDWR);
@@ -24,25 +24,20 @@ fn memfs_open_nonexistent_file_without_o_creat() {
 }
 
 #[test]
-fn memfs_create_existing_file_name_should_work() {
+fn test_should_succeed_when_creating_existing_file_name() {
     let fs = MemFS::new();
 
     let first_create = fs.open("/existing.rs", OpenFlag::O_CREAT | OpenFlag::O_RDWR);
-    
-    assert!(first_create.is_ok());
-
     let second_create = fs.open("/existing.rs", OpenFlag::O_CREAT | OpenFlag::O_RDWR);
 
+    assert!(first_create.is_ok());
     assert!(second_create.is_ok());
 }
 
 #[test]
-fn memfs_create_existing_directory_name_should_err() {
+fn test_should_fail_when_creating_existing_directory_name() {
     let fs = MemFS::new();
-
-    let dir_create = fs.mkdir("/mkdir");
-
-    assert!(dir_create.is_ok());
+    fs.mkdir("/mkdir").unwrap();
 
     let file_create = fs.open("/mkdir", OpenFlag::O_CREAT | OpenFlag::O_RDONLY);
 
@@ -52,57 +47,45 @@ fn memfs_create_existing_directory_name_should_err() {
 }
 
 #[test]
-fn memfs_remove_existing_file() {
+fn test_should_succeed_when_removing_existing_file() {
     let fs = MemFS::new();
 
     let create_result = fs.open("/example.md", OpenFlag::O_CREAT | OpenFlag::O_RDONLY);
-
-    assert!(create_result.is_ok());
-
     let remove_result = fs.remove("/example.md");
-
-    assert!(remove_result.is_ok());
-
     let open_result = fs.open("/example.md", OpenFlag::O_RDONLY);
-
+    
+    
+    assert!(create_result.is_ok());
+    assert!(remove_result.is_ok());
     assert!(open_result.is_err_and(|e| {
         matches!(e.err_type, MemFSErrType::ENOENT)
     }));
 }
 
 #[test]
-fn memfs_remove_nonexistent_file() {
+fn test_should_succeed_when_removing_nonexistent_file() {
     let fs = MemFS::new();
+    let fd = fs.open("/file1.c", OpenFlag::O_CREAT | OpenFlag::O_RDONLY).unwrap();
+    fs.close(fd).unwrap();
 
-    let create_result = fs.open("/file1.c", OpenFlag::O_CREAT | OpenFlag::O_RDONLY);
-
-    assert!(create_result.is_ok());
-
-    let close_result = fs.close(create_result.unwrap());
-
-    assert!(close_result.is_ok());
-
+    
     let remove_result = fs.remove("/file1.c");
-
-    assert!(remove_result.is_ok());
-
     let remove_again_result = fs.remove("/file1.c");
+    let remove_out_of_nowhere = fs.remove("/file2.c");
+    
 
     assert!(remove_again_result.is_err_and(|e| {
         matches!(e.err_type, MemFSErrType::ENOENT)
     }));
-
-    let remove_out_of_nowhere = fs.remove("/file2.c");
-
+    assert!(remove_result.is_ok());
     assert!(remove_out_of_nowhere.is_err_and(|e| {
         matches!(e.err_type, MemFSErrType::ENOENT)
     }));
 }
 
 #[test]
-fn memfs_remove_directory_should_err() {
+fn test_should_fail_when_removing_directory_instead_of_file() {
     let fs = MemFS::new();
-
     fs.mkdir("/filelike_dir").unwrap();
 
     let remove_result = fs.remove("/filelike_dir");
@@ -113,44 +96,38 @@ fn memfs_remove_directory_should_err() {
 }
 
 #[test]
-fn memfs_open_file_in_directory() {
+fn test_should_succeed_when_opening_file_in_directory() {
     let fs = MemFS::new();
 
     let mkdir_result = fs.mkdir("/dir");
-
-    assert!(mkdir_result.is_ok());
-
     let open_result = fs.open("/dir/fanta.jpg", OpenFlag::O_CREAT | OpenFlag::O_RDONLY);
-
+    
+    assert!(mkdir_result.is_ok());
     assert!(open_result.is_ok());
 }
 
 #[test]
-fn memfs_open_directory_should_err() {
+fn test_should_fail_when_opening_directory_instead_of_file() {
     let fs = MemFS::new();
 
     let mkdir_result = fs.mkdir("/memfs");
-
-    assert!(mkdir_result.is_ok());
-
     let open_result = fs.open("/memfs", OpenFlag::O_CREAT | OpenFlag::O_RDONLY);
     
+    assert!(mkdir_result.is_ok());
     assert!(open_result.is_err());
 }
 
 #[test]
-fn memfs_read_on_closed_file_descriptor_should_err() {
+fn test_should_fail_when_reading_from_closed_file_descriptor() {
     let fs = MemFS::new();
     let buffer_size = 64;
     let mut buffer = vec![0; buffer_size];
 
 
     let fd = fs.open("/closing.cls", OpenFlag::O_CREAT | OpenFlag::O_RDONLY).unwrap();
-    let close_result = fs.close(fd);
-
-    assert!(close_result.is_ok());
-
+    fs.close(fd).unwrap();
     let read_after_close = fs.read(fd, &mut buffer, buffer_size);
+
 
     assert!(read_after_close.is_err_and(|e| {
         matches!(e.err_type, MemFSErrType::EBADF)
@@ -158,20 +135,24 @@ fn memfs_read_on_closed_file_descriptor_should_err() {
 }
 
 #[test]
-fn memfs_play_with_multiple_file_descriptors() {
+fn test_should_success_when_writing_on_single_file_through_multiple_file_descriptors() {
     let fs = MemFS::new();
     let file_name = "/power.ade";
     let buffer_size = 64;
     let batch_size = 8;
     let loops = 256;
-    let mut init_buffer = generate_random_vector(buffer_size);
+    let mut comparison_buffer = generate_random_vector(buffer_size);
 
+    // Create file, and write random content on it.
     let init_fd = fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_RDWR).unwrap();
-    fs.write(init_fd, &init_buffer, buffer_size).unwrap();
+    fs.write(init_fd, &comparison_buffer, buffer_size).unwrap();
     fs.close(init_fd).unwrap();
 
+    // Vector that collects open file descriptors.
     let mut fd_vector = Vec::new();
 
+    // Open multiple file descriptors on single file, and write random content on random offset.
+    // For comparison, the same write operations are done on comparison_buffer too.
     for _ in 0..loops {
         let fd = fs.open(file_name, OpenFlag::O_WRONLY).unwrap();
         fd_vector.push(fd);
@@ -182,26 +163,30 @@ fn memfs_play_with_multiple_file_descriptors() {
         fs.lseek(fd, random_offset, SeekFlag::SEEK_SET).unwrap();
         fs.write(fd, &random_write_buffer, batch_size).unwrap();
 
-        init_buffer[random_offset..(random_offset + batch_size)].copy_from_slice(random_write_buffer.as_slice());
+        comparison_buffer[random_offset..(random_offset + batch_size)].copy_from_slice(random_write_buffer.as_slice());
     }
 
+    // Close every file descriptor.
     for fd in fd_vector {
         fs.close(fd).unwrap();
     }
 
+    // Now, the read from file again.
     let final_fd = fs.open(file_name, OpenFlag::O_RDONLY).unwrap();
     let mut final_buffer = vec![0; buffer_size];
 
     fs.read(final_fd, &mut final_buffer, buffer_size).unwrap();
     fs.close(final_fd).unwrap();
 
-    assert_eq!(init_buffer, final_buffer);
+    // Finally, check if the content on file is identical to comparison_buffer.
+    assert_eq!(comparison_buffer, final_buffer);
 }
 
 #[test]
-fn memfs_open_flag_mutual_exclusiveness_test() {
+fn test_combinations_of_mutually_exclusive_open_flags() {
     let fs = MemFS::new();
 
+    // O_RDONLY, O_WRONLY, O_RDWR are mutually exclusive flags, so when opening a file only one of them should be applied.
     let r1 = fs.open("/myfile1.my", OpenFlag::O_CREAT | OpenFlag::O_RDONLY | OpenFlag::O_WRONLY);
     let r2 = fs.open("/myfile2.my", OpenFlag::O_CREAT | OpenFlag::O_RDONLY | OpenFlag::O_RDWR);
     let r3 = fs.open("/myfile3.my", OpenFlag::O_CREAT | OpenFlag::O_WRONLY | OpenFlag::O_RDWR);
@@ -223,7 +208,7 @@ fn memfs_open_flag_mutual_exclusiveness_test() {
 
 // MemFS does not allow file offset over file size.
 #[test]
-fn memfs_seek_offset() {
+fn test_lseek_offset_value_with_different_seekflag() {
     let fs = MemFS::new();
     let file_size = 64;
     let random_buffer = generate_random_vector(file_size);
@@ -249,7 +234,7 @@ fn memfs_seek_offset() {
 }
 
 #[test]
-fn memfs_write_and_read_file_with_seek() {
+fn test_write_and_read_file_with_seek() {
     let fs = MemFS::new();
     let buffer_size = 64;
     let write_size = 8;
@@ -279,7 +264,6 @@ fn memfs_write_and_read_file_with_seek() {
         // Read whole file, and check content.
         fs.lseek(fd, 0, SeekFlag::SEEK_SET).unwrap();
         fs.read(fd, &mut reading_buffer, buffer_size).unwrap();
-
         assert_eq!(reading_buffer, random_buffer);
 
         // Set file offset to zero for next iteration.
@@ -290,18 +274,14 @@ fn memfs_write_and_read_file_with_seek() {
 }
 
 #[test]
-fn memfs_test_write_only_file() {
+fn test_should_fail_when_reading_from_write_only_file() {
     let fs = MemFS::new();
     let buffer_size = 16;
-
-    let write_only_open = fs.open("/write.f2", OpenFlag::O_CREAT | OpenFlag::O_WRONLY);
-    assert!(write_only_open.is_ok());
-    let write_only_fd = write_only_open.unwrap();
-
     let random_buffer = generate_random_vector(buffer_size);
-    let write_result = fs.write(write_only_fd, &random_buffer, buffer_size);
+
+    let write_only_fd = fs.open("/write.f2", OpenFlag::O_CREAT | OpenFlag::O_WRONLY).unwrap();
+    fs.write(write_only_fd, &random_buffer, buffer_size).unwrap();
     
-    assert!(write_result.is_ok());
 
     let mut placeholder_buffer = vec![0; buffer_size];
     let read_result = fs.read(write_only_fd, &mut placeholder_buffer, buffer_size);
@@ -309,39 +289,35 @@ fn memfs_test_write_only_file() {
     assert!(read_result.is_err_and(|e| {
         matches!(e.err_type, MemFSErrType::EBADF)
     }))
-    
 }
 
 #[test]
-fn memfs_test_read_only_file() {
+fn test_reading_and_writing_on_read_only_file() {
     let fs = MemFS::new();
     let buffer_size = 64;
-
-    let initial_open = fs.open("/victim.vic", OpenFlag::O_CREAT | OpenFlag::O_RDWR);
-
-    assert!(initial_open.is_ok());
-
-    let initial_fd = initial_open.unwrap();
-
     let random_buffer = generate_random_vector(buffer_size);
-    let write_result = fs.write(initial_fd, &random_buffer, buffer_size);
-    assert!(write_result.is_ok());
 
-    let close_result = fs.close(initial_fd);
-    assert!(close_result.is_ok());
+    // Prepare file, and write random content on it.
+    let initial_fd = fs.open("/victim.vic", OpenFlag::O_CREAT | OpenFlag::O_RDWR).unwrap();
+    fs.write(initial_fd, &random_buffer, buffer_size).unwrap();
+    fs.close(initial_fd).unwrap();
 
     let mut buffer = vec![0; buffer_size];
 
+    // Open file again, now on read-only mode.
     let read_only_open = fs.open("/victim.vic", OpenFlag::O_RDONLY);
     assert!(read_only_open.is_ok());
     let read_only_fd = read_only_open.unwrap();
 
+    // Try reading, and writing on file.
     let read_result = fs.read(read_only_fd, &mut buffer, buffer_size);
+    let write_on_read_only = fs.write(read_only_fd, &random_buffer, buffer_size);
     
+    // Reading should succeed.
     assert!(read_result.is_ok());
     assert_eq!(random_buffer, buffer);
 
-    let write_on_read_only = fs.write(read_only_fd, &random_buffer, buffer_size);
+    // Writing should fail.
     assert!(write_on_read_only.is_err_and(|e| {
         matches!(e.err_type, MemFSErrType::EBADF)
     }));
@@ -349,68 +325,74 @@ fn memfs_test_read_only_file() {
 
 
 #[test]
-fn memfs_read_more_than_buffer_size_should_err() {
+fn test_should_fail_when_reading_from_file_by_more_than_buffer_size() {
     let fs = MemFS::new();
     let file_size = 256;
     let buffer_size = 64;
-
-    let initial_open = fs.open("/dontreadtoomuch", OpenFlag::O_CREAT | OpenFlag::O_RDWR);
-
-    assert!(initial_open.is_ok());
-
-    let initial_fd = initial_open.unwrap();
-
+    let file_name = "/dontreadtoomuch";
     let random_buffer = generate_random_vector(file_size);
-    let write_result = fs.write(initial_fd, &random_buffer, file_size);
-    assert!(write_result.is_ok());
 
-    let close_result = fs.close(initial_fd);
-    assert!(close_result.is_ok());
-
+    // Create a file and write random content on it.
+    let initial_fd = fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_RDWR).unwrap();
+    fs.write(initial_fd, &random_buffer, file_size).unwrap();
+    fs.close(initial_fd).unwrap();
 
     let mut read_buffer = vec![0; buffer_size];
 
-    let read_open = fs.open("/dontreadtoomuch", OpenFlag::O_RDONLY);
-    assert!(read_open.is_ok());
+    let fd = fs.open(file_name, OpenFlag::O_RDONLY).unwrap();
 
-    let read_result = fs.read(read_open.unwrap(), &mut read_buffer, file_size);
+    // Try to read more than buffer size; it should fail.
+    let read_result = fs.read(fd, &mut read_buffer, file_size);
     assert!(read_result.is_err_and(|e| {
         matches!(e.err_type, MemFSErrType::EFAULT)
     }));
 }
 
 #[test]
-fn memfs_write_over_file_size() {
+fn test_should_success_when_reading_from_file_by_more_than_buffer_size_but_actual_content_size_is_not_larger_than_buffer_size() {
+    let fs = MemFS::new();
+    let file_size = 64;
+    let pseudo_read_size = 256;
+    let buffer_size = file_size;
+    let file_name = "/donald.trump";
+    let random_buffer = generate_random_vector(file_size);
+
+    // Create a file and write random content on it.
+    let initial_fd = fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_RDWR).unwrap();
+    fs.write(initial_fd, &random_buffer, file_size).unwrap();
+    fs.close(initial_fd).unwrap();
+
+    let mut read_buffer = vec![0; buffer_size];
+
+    let fd = fs.open(file_name, OpenFlag::O_RDONLY).unwrap();
+
+    // Try to read more than buffer size, but the actual content size is not larger than buffer size.
+    let read_result = fs.read(fd, &mut read_buffer, pseudo_read_size);
+    assert!(read_result.is_ok_and(|result|{
+        result == file_size
+    }));
+}
+
+#[test]
+fn test_should_success_when_writing_over_the_file_size() {
     let fs = MemFS::new();
     let small_buffer_size = 64;
     let large_buffer_size = 256;
-
-    let initial_open = fs.open("/enlarge.lag", OpenFlag::O_CREAT | OpenFlag::O_RDWR);
-
-    assert!(initial_open.is_ok());
-
-    let initial_fd = initial_open.unwrap();
-
+    let file_name = "/enlarge.lag";
     let random_buffer = generate_random_vector(small_buffer_size);
-    let write_result = fs.write(initial_fd, &random_buffer, small_buffer_size);
-    assert!(write_result.is_ok());
-
-    let close_result = fs.close(initial_fd);
-    assert!(close_result.is_ok());
-
-    
-    let write_open = fs.open("/enlarge.lag", OpenFlag::O_WRONLY);
-    assert!(write_open.is_ok());
-
-    let write_fd = write_open.unwrap();
-
     let large_random_buffer = generate_random_vector(large_buffer_size);
+
+    // Create file and write random content.
+    let initial_fd = fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_RDWR).unwrap();
+    fs.write(initial_fd, &random_buffer, small_buffer_size).unwrap();
+    fs.close(initial_fd).unwrap();
+    
+    let write_fd = fs.open(file_name, OpenFlag::O_WRONLY).unwrap();
+
     let large_write_result = fs.write(write_fd, &large_random_buffer, large_buffer_size);
     assert!(large_write_result.is_ok_and(|v| {
         v == large_buffer_size
     }));
 
-    let write_close = fs.close(write_fd);
-    assert!(write_close.is_ok());
-
+    fs.close(write_fd).unwrap();
 }

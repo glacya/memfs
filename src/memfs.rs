@@ -7,6 +7,10 @@ pub struct MemFS {
     file_descriptor_count: Arc<Mutex<usize>>,
 }
 
+unsafe impl Sync for MemFS {}
+
+unsafe impl Send for MemFS {}
+
 impl MemFS {
     pub fn new() -> Self {
         Self {
