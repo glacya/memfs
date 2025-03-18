@@ -10,3 +10,9 @@ check-loom = ["loom"]
 bitflags = "2.9.0"
 rand = "0.9.0"
 loom = {version = "0.7", optional = true}
+
+[profile.release]
+debug = true
+
+[profile.bench]
+debug = true
