@@ -16,3 +16,8 @@ debug = true
 
 [profile.bench]
 debug = true
+
+[profile.test]
+debug = true
+strip = false
+opt-level = 0

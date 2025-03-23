@@ -2,9 +2,7 @@ use crate::utils::{MemFSErr, OpenFlag, Result, SeekFlag};
 use std::{
     cell::UnsafeCell,
     collections::{HashMap, hash_map::Entry},
-    ffi::OsStr,
     iter::Peekable,
-    path::Path,
     sync::{Arc, Mutex, RwLock},
 };
 
@@ -36,6 +34,7 @@ impl MemFS {
         }
 
         if flag.contains(OpenFlag::O_CREAT) {
+            println!("???");
             self.create(path, OpenFlag::O_EXCL & (flag.clone()))?;
         }
 
@@ -156,6 +155,10 @@ impl MemFS {
         }
     }
 
+    pub fn chdir(&self, path: &str) -> Result<()> {
+        todo!()
+    }
+
     fn create(&self, path: &str, flag: OpenFlag) -> Result<()> {
         let dir_path = Self::get_directory_names_excluding_last_one(path).peekable();
         let dir_node = self.root.search_entry_with_path(dir_path)?;
@@ -169,15 +172,19 @@ impl MemFS {
         }
     }
 
-    fn path_str_to_iter(path: &str) -> Peekable<impl Iterator<Item = &OsStr>> {
-        Path::new(path).iter().peekable()
+    fn path_str_to_iter(path: &str) -> Peekable<impl Iterator<Item = &str>> {
+        path.split("/").into_iter().peekable()
     }
 
-    fn get_directory_names_excluding_last_one(path: &str) -> impl Iterator<Item = &OsStr> {
-        let path_iter = Path::new(path).iter();
+    fn get_directory_names_excluding_last_one(path: &str) -> impl Iterator<Item = &str> {
+        let path_iter = path.split("/").into_iter();
         let iter_count = path.split("/").count();
 
         path_iter.take(iter_count.saturating_sub(1))
+    }
+
+    fn resolve_path_to_full_absolute_path(path: &str) -> &str {
+        todo!()
     }
 
     fn allocate_file_descriptor(&self) -> Result<usize> {
@@ -215,7 +222,9 @@ impl MemFSDirNode {
         }
     }
 
-    // Creating new file should not fail even if there is already a file with same name.
+    /// Creating new file with O_CREAT flag should not fail even if there is already a file with same name.
+    /// However, if O_EXCL flag is given along with O_CREAT, creating new file with existing file name
+    /// must fail.
     fn create_new_file(&self, file_name: &str, flag: OpenFlag) -> Result<()> {
         let mut guard = self
             .children
@@ -310,13 +319,15 @@ impl MemFSDirNode {
 
     fn search_entry_with_path<'a>(
         &self,
-        mut iter: Peekable<impl Iterator<Item = &'a OsStr>>,
+        mut iter: Peekable<impl Iterator<Item = &'a str>>,
     ) -> Result<Arc<RwLock<MemFSEntry>>> {
         let current_elem = iter.next();
 
-        let current_path = current_elem.unwrap().to_str().unwrap();
+        let current_path = current_elem.unwrap();
 
         let next_elem = iter.peek();
+
+        println!("{}, {:?}", current_path, next_elem);
 
         let guard = self
             .children
