@@ -215,7 +215,7 @@ impl MemFSDirNode {
         let inner = MemFSEntry::Directory(Self::new());
         let mut map = HashMap::new();
 
-        map.insert("/".to_string(), Arc::new(RwLock::new(inner)));
+        map.insert("".to_string(), Arc::new(RwLock::new(inner)));
 
         Self {
             children: Arc::new(RwLock::new(map)),
