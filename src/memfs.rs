@@ -1,15 +1,17 @@
 use crate::utils::{MemFSErr, OpenFlag, Result, SeekFlag};
 use std::{
     cell::UnsafeCell,
-    collections::{HashMap, hash_map::Entry},
+    collections::{hash_map::Entry, HashMap},
     iter::Peekable,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, RwLock, Weak}
 };
 
 /// Implementation of In-Memory file system that supports the following system calls:
 /// [open], [close], [unlink], [read], [write], [lseek], [mkdir], [rmdir]
 pub struct MemFS {
-    root: MemFSDirNode,
+    root: Arc<RwLock<MemFSEntry>>,
+    cwd_node: Arc<RwLock<MemFSEntry>>,
+    // cwd_path: Arc<RwLock<String>>,
     file_descriptiors: Arc<RwLock<HashMap<usize, MemFSFileDescriptor>>>,
     file_descriptor_count: Arc<Mutex<usize>>,
 }
@@ -20,8 +22,12 @@ unsafe impl Send for MemFS {}
 
 impl MemFS {
     pub fn new() -> Self {
+        let root = Arc::new(RwLock::new(MemFSEntry::Directory(MemFSDirNode::root())));
+
         Self {
-            root: MemFSDirNode::root(),
+            root: root.clone(),
+            cwd_node: root, 
+            // cwd_path: Arc::new(RwLock::new("/".to_string())),
             file_descriptiors: Arc::new(RwLock::new(HashMap::new())),
             file_descriptor_count: Arc::new(Mutex::new(0)),
         }
@@ -34,12 +40,10 @@ impl MemFS {
         }
 
         if flag.contains(OpenFlag::O_CREAT) {
-            println!("???");
             self.create(path, OpenFlag::O_EXCL & (flag.clone()))?;
         }
 
-        let iter = Self::path_str_to_iter(path);
-        let item_node = self.root.search_entry_with_path(iter)?;
+        let item_node = self.get_node_of_given_path(path)?;
 
         let item_guard = item_node.read().map_err(|_| MemFSErr::poisoned_lock())?;
 
@@ -78,13 +82,15 @@ impl MemFS {
     }
 
     pub fn unlink(&self, path: &str) -> Result<()> {
-        let dir_path = Self::get_directory_names_excluding_last_one(path).peekable();
-        let dir_node = self.root.search_entry_with_path(dir_path)?;
+        // let (dir_path, last_elem) = self.path_str_to_iter_and_prepare_last_component(path)?;
+        // let dir_node = self.root.search_entry_with_path(dir_path)?;
+        let dir_node = self.get_parent_directory_node_of_given_path(path)?;
+        let last_elem = Self::get_last_component_of_path(path)?;
         let dir_guard = dir_node.write().map_err(|_| MemFSErr::poisoned_lock())?;
 
         match &*dir_guard {
             MemFSEntry::Directory(dir) => {
-                dir.remove_file(path.split("/").last().expect("Path is unspecified"))
+                dir.remove_file(last_elem)
             }
             MemFSEntry::File(_) => Err(MemFSErr::no_such_file_or_directory()),
         }
@@ -130,61 +136,163 @@ impl MemFS {
     }
 
     pub fn mkdir(&self, path: &str) -> Result<()> {
-        let dir_path = Self::get_directory_names_excluding_last_one(path).peekable();
-        let dir_node = self.root.search_entry_with_path(dir_path)?;
+        // let (dir_path, last_elem) = self.path_str_to_iter_and_prepare_last_component(path)?;
+        // let dir_node = self.root.search_entry_with_path(dir_path)?;
+        let dir_node = self.get_parent_directory_node_of_given_path(path)?;
+        let last_elem = Self::get_last_component_of_path(path)?;
         let dir_guard = dir_node.write().map_err(|_| MemFSErr::poisoned_lock())?;
 
         match &*dir_guard {
             MemFSEntry::Directory(dir) => {
-                dir.create_new_directory(path.split("/").last().expect("Path is unspecified"))
+                dir.create_new_directory(last_elem)
             }
             MemFSEntry::File(_) => Err(MemFSErr::no_such_file_or_directory()),
         }
     }
 
     pub fn rmdir(&self, path: &str) -> Result<()> {
-        let dir_path = Self::get_directory_names_excluding_last_one(path).peekable();
-        let dir_node = self.root.search_entry_with_path(dir_path)?;
+        // let (dir_path, last_elem) = self.path_str_to_iter_and_prepare_last_component(path)?;
+        // let root = *self.root.read().unwrap();
+        // let dir_node = root.search_entry_with_path(dir_path)?;
+        let dir_node = self.get_parent_directory_node_of_given_path(path)?;
+        let last_elem = Self::get_last_component_of_path(path)?;
         let dir_guard = dir_node.write().map_err(|_| MemFSErr::poisoned_lock())?;
 
         match &*dir_guard {
             MemFSEntry::Directory(dir) => {
-                dir.remove_directory(path.split("/").last().expect("Path is unspecified"))
+                dir.remove_directory(last_elem)
             }
             MemFSEntry::File(_) => Err(MemFSErr::no_such_file_or_directory()),
         }
     }
 
     pub fn chdir(&self, path: &str) -> Result<()> {
-        todo!()
+        if path.is_empty() {
+            return Err(MemFSErr::no_such_file_or_directory());
+        }
+
+        if path.chars().nth(0).unwrap() == '/' {
+            // Absolute path. Traverse from 
+        }
+        else {
+            // Relative path
+
+        }
+
+        Ok(())
     }
 
     fn create(&self, path: &str, flag: OpenFlag) -> Result<()> {
-        let dir_path = Self::get_directory_names_excluding_last_one(path).peekable();
-        let dir_node = self.root.search_entry_with_path(dir_path)?;
+        let dir_node = self.get_parent_directory_node_of_given_path(path)?;
+        let last_elem = Self::get_last_component_of_path(path)?;
         let dir_guard = dir_node.write().map_err(|_| MemFSErr::poisoned_lock())?;
 
         match &*dir_guard {
             MemFSEntry::Directory(dir) => {
-                dir.create_new_file(path.split("/").last().expect("Path is unspecified"), flag)
+                dir.create_new_file(last_elem, flag)
             }
             MemFSEntry::File(_) => Err(MemFSErr::no_such_file_or_directory()),
         }
     }
 
-    fn path_str_to_iter(path: &str) -> Peekable<impl Iterator<Item = &str>> {
-        path.split("/").into_iter().peekable()
+    fn path_str_to_iter(&self, path: &str) -> Result<Peekable<impl Iterator<Item = String>>> {
+        // let resolved_path = self.resolve_path_to_full_absolute_path(path)?;
+        // let vec: Vec<String> = resolved_path.split("/").map(|x| x.to_string()).collect();
+
+        if path.is_empty() {
+            return Err(MemFSErr::no_such_file_or_directory());
+        }
+
+        let add_front = path.chars().nth(0).unwrap() == '/';
+
+        let mut vec: Vec<String> = path.split("/").filter(|x| *x != "").map(|x| x.to_string()).collect();
+        
+        if add_front {
+            let mut front_vec = vec!["".to_string()];
+
+            front_vec.extend(vec);
+
+            vec = front_vec;
+        }
+
+        Ok(vec.into_iter().peekable())
     }
 
-    fn get_directory_names_excluding_last_one(path: &str) -> impl Iterator<Item = &str> {
-        let path_iter = path.split("/").into_iter();
-        let iter_count = path.split("/").count();
+    fn path_str_to_iter_and_without_last_component(&self, path: &str) -> Result<Peekable<impl Iterator<Item = String>>> {
+        // let resolved_path = self.resolve_path_to_full_absolute_path(path)?;
+        // let vec: Vec<String> = resolved_path.split("/").map(|x| x.to_string()).collect();
+        if path.is_empty() {
+            return Err(MemFSErr::no_such_file_or_directory());
+        }
 
-        path_iter.take(iter_count.saturating_sub(1))
+        let add_front = path.chars().nth(0).unwrap() == '/';
+
+        let mut vec: Vec<String> = path.split("/").filter(|x| *x != "").map(|x| x.to_string()).collect();
+
+        if add_front {
+            let mut front_vec = vec!["".to_string()];
+
+            front_vec.extend(vec);
+
+            vec = front_vec;
+        }
+
+        let iter_count = vec.len();
+        let path_iter = vec.into_iter();
+
+        Ok(path_iter.take(iter_count.saturating_sub(1)).peekable())
     }
 
-    fn resolve_path_to_full_absolute_path(path: &str) -> &str {
-        todo!()
+    fn get_last_component_of_path(path: &str) -> Result<&str> {
+        path.split("/").last().ok_or(MemFSErr::no_such_file_or_directory())
+    }
+
+    fn get_node_of_given_path(&self, path: &str) -> Result<Arc<RwLock<MemFSEntry>>> {
+        if path.is_empty() {
+            return Err(MemFSErr::no_such_file_or_directory());
+        }
+        
+        let iter = self.path_str_to_iter(path)?;
+
+        let guard = if path.chars().nth(0).unwrap() == '/' {
+            // Absolute path
+            self.root.read().map_err(|_| MemFSErr::poisoned_lock())
+        }
+        else {
+            // Relative path
+            self.cwd_node.read().map_err(|_| MemFSErr::poisoned_lock())
+        }?;
+
+        match &*guard {
+            MemFSEntry::Directory(dir) => dir.search_entry_with_path(iter),
+            MemFSEntry::File(_) => Err(MemFSErr::no_such_file_or_directory())
+        }
+    }
+
+    fn get_parent_directory_node_of_given_path(&self, path: &str) -> Result<Arc<RwLock<MemFSEntry>>> {
+        if path.is_empty() {
+            return Err(MemFSErr::no_such_file_or_directory());
+        }
+
+        let mut iter = self.path_str_to_iter_and_without_last_component(path)?;
+
+        if iter.peek().is_none() {
+            return Ok(self.root.clone());
+        }
+
+        let guard = if path.chars().nth(0).unwrap() == '/' {
+            // Absolute path
+            self.root.read().map_err(|_| MemFSErr::poisoned_lock())
+        }
+        else {
+            // Relative path
+            self.cwd_node.read().map_err(|_| MemFSErr::poisoned_lock())
+        }?;
+
+        match &*guard {
+            MemFSEntry::Directory(dir) => dir.search_entry_with_path(iter),
+            MemFSEntry::File(_) => Err(MemFSErr::no_such_file_or_directory())
+        }
     }
 
     fn allocate_file_descriptor(&self) -> Result<usize> {
@@ -200,13 +308,16 @@ impl MemFS {
     }
 }
 
+#[derive(Clone)]
 pub struct MemFSDirNode {
-    pub children: Arc<RwLock<HashMap<String, Arc<RwLock<MemFSEntry>>>>>,
+    parent: Option<Weak<RwLock<MemFSEntry>>>,
+    children: Arc<RwLock<HashMap<String, Arc<RwLock<MemFSEntry>>>>>,
 }
 
 impl MemFSDirNode {
     pub fn new() -> Self {
         Self {
+            parent: None,
             children: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -218,7 +329,15 @@ impl MemFSDirNode {
         map.insert("".to_string(), Arc::new(RwLock::new(inner)));
 
         Self {
+            parent: None,
             children: Arc::new(RwLock::new(map)),
+        }
+    }
+
+    pub fn with_parent(parent: Weak<RwLock<MemFSEntry>>) -> Self {
+        Self {
+            parent: Some(parent),
+            children: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -317,13 +436,14 @@ impl MemFSDirNode {
         Ok(())
     }
 
-    fn search_entry_with_path<'a>(
+    fn search_entry_with_path(
         &self,
-        mut iter: Peekable<impl Iterator<Item = &'a str>>,
+        mut iter: Peekable<impl Iterator<Item = String>>,
     ) -> Result<Arc<RwLock<MemFSEntry>>> {
         let current_elem = iter.next();
 
-        let current_path = current_elem.unwrap();
+        let cv = current_elem.unwrap();
+        let current_path = cv.as_str();
 
         let next_elem = iter.peek();
 
@@ -341,7 +461,7 @@ impl MemFSDirNode {
 
                     match &*inner_guard {
                         MemFSEntry::Directory(dir) => dir.search_entry_with_path(iter),
-                        MemFSEntry::File(_) => Err(MemFSErr::no_such_file_or_directory()),
+                        MemFSEntry::File(_) => Err(MemFSErr::is_not_directory()),
                     }
                 }
                 None => Err(MemFSErr::no_such_file_or_directory()),
@@ -355,24 +475,10 @@ impl MemFSDirNode {
             }
         }
     }
-
-    // fn add_child(&self, name: &str, entry: MemFSEntry) -> Result<()> {
-    //     let mut guard = self.children.write().or_else(|_| {
-    //         Err(MemFSErr::poisoned_lock())
-    //     })?;
-
-    //     match guard.entry(name.to_string()) {
-    //         Entry::Occupied(_) => Err(MemFSErr::already_exists()),
-    //         Entry::Vacant(e) => {
-    //             e.insert(Arc::new(RwLock::new(entry)));
-    //             Ok(())
-    //         }
-    //     }
-    // }
 }
 
 pub struct MemFSFileNode {
-    pub value: UnsafeCell<Vec<u8>>,
+    value: UnsafeCell<Vec<u8>>,
 }
 
 impl MemFSFileNode {
@@ -391,17 +497,19 @@ pub enum MemFSEntry {
 struct MemFSFileDescriptor {
     _number: usize,
     flag: OpenFlag,
-    file_offset: Arc<Mutex<usize>>,
+    file_offset: Arc<RwLock<usize>>,
     entry: Arc<RwLock<MemFSEntry>>,
+    append_mutex: Arc<Mutex<()>>,
 }
 
 impl MemFSFileDescriptor {
     pub fn new(number: usize, flag: OpenFlag, entry: Arc<RwLock<MemFSEntry>>) -> Self {
         Self {
-            _number: number,
-            flag,
-            file_offset: Arc::new(Mutex::new(0)),
-            entry,
+                _number: number,
+                flag,
+                file_offset: Arc::new(RwLock::new(0)),
+                entry,
+                append_mutex: Arc::new(Mutex::new(())),
         }
     }
 
@@ -415,18 +523,21 @@ impl MemFSFileDescriptor {
         if let MemFSEntry::File(file) = &*guard {
             let file_guard = file.value.get();
 
-            let mut offset_guard = self
+            let offset_read_guard = self
                 .file_offset
-                .lock()
+                .read()
                 .map_err(|_| MemFSErr::poisoned_lock())?;
 
+            let current_offset = *offset_read_guard;
+            drop(offset_read_guard);
+
             let content = unsafe { &*file_guard };
-            let reading_length = ((*offset_guard).saturating_add(size))
+            let reading_length = ((current_offset).saturating_add(size))
                 .min(content.len())
-                .saturating_sub(*offset_guard);
+                .saturating_sub(current_offset);
 
             let slice_from_file =
-                content[*offset_guard..(*offset_guard).saturating_add(reading_length)].to_vec();
+                content[current_offset..(current_offset).saturating_add(reading_length)].to_vec();
 
             if buffer.len() < reading_length {
                 return Err(MemFSErr::bad_memory_access());
@@ -434,7 +545,9 @@ impl MemFSFileDescriptor {
 
             buffer[0..reading_length].copy_from_slice(&slice_from_file);
 
-            *offset_guard = (*offset_guard).saturating_add(reading_length);
+            let mut offset_write_guard = self.file_offset.write().map_err(|_| MemFSErr::poisoned_lock())?;
+
+            *offset_write_guard = (*offset_write_guard).saturating_add(reading_length);
 
             Ok(slice_from_file.len())
         } else {
@@ -452,24 +565,38 @@ impl MemFSFileDescriptor {
         if let MemFSEntry::File(file) = &*guard {
             let file_guard = file.value.get();
 
-            let mut offset_guard = self
+            let lock =  self.append_mutex.lock().map_err(|_| MemFSErr::poisoned_lock());
+            
+            if !self.flag.contains(OpenFlag::O_APPEND) {
+                drop(lock);
+            }
+
+            let offset_read_guard = self
                 .file_offset
-                .lock()
+                .read()
                 .map_err(|_| MemFSErr::poisoned_lock())?;
+
+            let current_offset = *offset_read_guard;
+            drop(offset_read_guard);
 
             let file_content = unsafe { &mut *file_guard };
 
             let writing_content_size = size.min(buffer.len());
-            let expected_offset = (*offset_guard).saturating_add(writing_content_size);
+            let expected_offset = current_offset.saturating_add(writing_content_size);
 
             if expected_offset > file_content.len() {
                 file_content.resize(expected_offset, 0);
             }
 
-            file_content[*offset_guard..expected_offset]
+            file_content[current_offset..expected_offset]
                 .copy_from_slice(&buffer[0..writing_content_size]);
 
-            *offset_guard = expected_offset;
+            let mut offset_write_guard = self
+                .file_offset
+                .write()
+                .map_err(|_| MemFSErr::poisoned_lock())?;
+
+            *offset_write_guard = expected_offset;
 
             Ok(writing_content_size)
         } else {
@@ -478,12 +605,15 @@ impl MemFSFileDescriptor {
     }
 
     unsafe fn seek_file(&self, seek_position: usize, flag: SeekFlag) -> Result<usize> {
-        let mut offset_guard = self
+        let offset_guard = self
             .file_offset
-            .lock()
+            .read()
             .map_err(|_| MemFSErr::poisoned_lock())?;
 
         let fg = self.entry.read().map_err(|_| MemFSErr::poisoned_lock())?;
+        let current_offset = *offset_guard;
+
+        drop(offset_guard);
 
         let maximum_offset = if let MemFSEntry::File(file) = &*fg {
             let inner_guard = file.value.get();
@@ -494,13 +624,15 @@ impl MemFSFileDescriptor {
         };
 
         let additional_offset = match flag {
-            SeekFlag::SEEK_CUR => *offset_guard,
+            SeekFlag::SEEK_CUR => current_offset,
             SeekFlag::SEEK_END => maximum_offset,
             SeekFlag::SEEK_SET => 0,
         };
 
-        *offset_guard = maximum_offset.min(additional_offset.saturating_add(seek_position));
+        let mut write_guard = self.file_offset.write().map_err(|_| MemFSErr::poisoned_lock())?;
 
-        Ok(*offset_guard)
+        *write_guard = maximum_offset.min(additional_offset.saturating_add(seek_position));
+
+        Ok(*write_guard)
     }
 }

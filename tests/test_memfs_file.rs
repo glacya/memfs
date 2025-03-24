@@ -15,6 +15,15 @@ fn test_should_succeed_when_creating_file() {
 }
 
 #[test]
+fn test_should_fail_on_opening_empty_path() {
+    let fs = MemFS::new();
+
+    let result = fs.open("", OpenFlag::O_CREAT | OpenFlag::O_RDONLY);
+
+    assert!(result.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOENT )}))
+}
+
+#[test]
 fn test_should_fail_when_opening_nonexistent_file_without_o_creat() {
     let fs = MemFS::new();
 
@@ -63,6 +72,18 @@ fn test_should_fail_when_opening_directory_instead_of_file() {
     let open_result = fs.open("/memfs", OpenFlag::O_CREAT | OpenFlag::O_RDONLY);
 
     assert!(open_result.is_err_and(|e| { matches!(e.err_type, MemFSErrType::EISDIR) }));
+}
+
+#[test]
+fn test_should_fail_when_opening_path_of_which_middle_component_is_file_instead_of_directory() {
+    let fs = MemFS::new();
+    fs.mkdir("/dir1").unwrap();
+    let fd = fs.open("/dir1/dir2", OpenFlag::O_CREAT | OpenFlag::O_RDONLY).unwrap();
+    fs.close(fd).unwrap();
+
+    let open_result = fs.open("/dir1/dir2/file", OpenFlag::O_RDWR);
+
+    assert!(open_result.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOTDIR)}));
 }
 
 #[test]
@@ -177,6 +198,15 @@ fn test_should_fail_when_removing_directory_instead_of_file() {
     let remove_result = fs.unlink("/filelike_dir");
 
     assert!(remove_result.is_err_and(|e| { matches!(e.err_type, MemFSErrType::EISDIR) }));
+}
+
+#[test]
+fn test_should_fail_on_removing_empty_path() {
+    let fs = MemFS::new();
+    
+    let remove_result = fs.unlink("");
+
+    assert!(remove_result.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOENT )}));
 }
 
 #[test]
@@ -513,4 +543,9 @@ fn test_should_succeed_when_writing_over_the_file_size() {
     assert!(large_write_result.is_ok_and(|v| { v == large_buffer_size }));
 
     fs.close(write_fd).unwrap();
+}
+
+#[test]
+fn test_check_whether_writes_on_descriptor_with_o_append_are_done_regardless_of_offset() {
+    todo!()
 }

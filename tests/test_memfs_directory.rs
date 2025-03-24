@@ -20,6 +20,52 @@ fn test_should_fail_when_mkdir_on_nonexistent_path() {
 }
 
 #[test]
+fn test_should_fail_on_mkdir_with_empty_path() {
+    let fs = MemFS::new();
+
+    let result = fs.mkdir("");
+
+    assert!(result.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOENT )}));
+}
+
+#[test]
+fn test_should_fail_on_mkdir_with_existing_file_name() {
+
+    /* Arrange */
+
+    let fs = MemFS::new();
+    let file_name = "/noodle";
+
+    let fd = fs
+        .open(file_name, OpenFlag::O_CREAT | OpenFlag::O_RDONLY)
+        .unwrap();
+    fs.close(fd).unwrap();
+
+    /* Action */
+
+    let mkdir_with_existing_file_name = fs.mkdir("/noodle");
+    fs.unlink(file_name).unwrap();
+    let mkdir_after_remove = fs.mkdir("/noodle");
+    
+    /* Assert */
+
+    assert!(
+        mkdir_with_existing_file_name
+            .is_err_and(|e| { matches!(e.err_type, MemFSErrType::EEXIST) })
+    );
+    assert!(mkdir_after_remove.is_ok());
+}
+
+#[test]
+fn test_should_fail_on_mkdir_with_root_path() {
+    let fs = MemFS::new();
+
+    let root_mkdir = fs.mkdir("/");
+
+    assert!(root_mkdir.is_err_and(|e| { matches!(e.err_type, MemFSErrType::EEXIST)} ));
+}
+
+#[test]
 fn test_should_success_when_rmdir_on_existing_path() {
     let fs = MemFS::new();
 
@@ -34,6 +80,9 @@ fn test_should_success_when_rmdir_on_existing_path() {
 
 #[test]
 fn test_should_fail_when_rmdir_on_nonempty_path() {
+
+    /* Arrange */
+
     let fs = MemFS::new();
 
     // Create some directories, and a file.
@@ -48,14 +97,12 @@ fn test_should_fail_when_rmdir_on_nonempty_path() {
         .unwrap();
     fs.close(fd).unwrap();
 
+    /* Action */
+
     // Try rmdir on directories.
     let empty_rmdir = fs.rmdir("/dir1/dir3");
     let nonempty_rmdir1 = fs.rmdir("/dir1");
     let nonempty_rmdir2 = fs.rmdir("/dir1/dir2");
-
-    assert!(empty_rmdir.is_ok());
-    assert!(nonempty_rmdir1.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOTEMPTY) }));
-    assert!(nonempty_rmdir2.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOTEMPTY) }));
 
     // Try again after removing a file.
     fs.unlink("/dir1/dir2/quack.duck").unwrap();
@@ -63,34 +110,20 @@ fn test_should_fail_when_rmdir_on_nonempty_path() {
     let now_rmdir1 = fs.rmdir("/dir1/dir2");
     let now_rmdir2 = fs.rmdir("/dir1");
 
+    /* Assert */
+
+    assert!(empty_rmdir.is_ok());
+    assert!(nonempty_rmdir1.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOTEMPTY) }));
+    assert!(nonempty_rmdir2.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOTEMPTY) }));
     assert!(now_rmdir1.is_ok());
     assert!(now_rmdir2.is_ok());
 }
 
 #[test]
-fn test_should_fail_on_mkdir_with_existing_file_name() {
-    let fs = MemFS::new();
-    let file_name = "/noodle";
-
-    let fd = fs
-        .open(file_name, OpenFlag::O_CREAT | OpenFlag::O_RDONLY)
-        .unwrap();
-    fs.close(fd).unwrap();
-
-    let mkdir_with_existing_file_name = fs.mkdir("/noodle");
-    assert!(
-        mkdir_with_existing_file_name
-            .is_err_and(|e| { matches!(e.err_type, MemFSErrType::EEXIST) })
-    );
-
-    fs.unlink(file_name).unwrap();
-
-    let mkdir_after_remove = fs.mkdir("/noodle");
-    assert!(mkdir_after_remove.is_ok());
-}
-
-#[test]
 fn test_should_fail_when_rmdir_on_file() {
+    
+    /* Arrange */
+
     let fs = MemFS::new();
     let file_name = "/imfile";
 
@@ -99,36 +132,218 @@ fn test_should_fail_when_rmdir_on_file() {
         .unwrap();
     fs.close(fd).unwrap();
 
+    /* Action */
+
     let rmdir_on_file = fs.rmdir(file_name);
+
+    /* Assert */
 
     assert!(rmdir_on_file.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOTDIR) }));
 }
 
 #[test]
+fn test_should_fail_on_rmdir_with_empty_path() {
+    let fs = MemFS::new();
+
+    let rmdir_empty_path = fs.rmdir("");
+
+    assert!(rmdir_empty_path.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOENT )}));
+}
+
+#[test]
 fn test_should_succeed_on_repeated_mkdir_and_rmdir_with_tremendous_levels() {
+
+    /* Arrange */
+
     let fs = MemFS::new();
     let loops = 256;
     let numbers = generate_random_vector(loops);
 
+    let first_path = std::fmt::format(format_args!("/{}", numbers[0]));
+    fs.mkdir(first_path.as_str()).unwrap();
+
+    /* Action */
+
     // Create a spire of directories.
-    for i in 0..loops {
+    for i in 1..loops {
         let dir_name: String = numbers[0..(i + 1)]
             .iter()
             .map(|v| std::fmt::format(format_args!("/{}", v)))
             .collect();
 
-        let mkdir_result = fs.mkdir(dir_name.as_str());
-        assert!(mkdir_result.is_ok());
+        fs.mkdir(dir_name.as_str()).unwrap();
     }
 
     // Remove the spire from the deepest to the shallowest.
-    for i in (0..loops).rev() {
+    for i in (1..loops).rev() {
         let dir_name: String = numbers[0..(i + 1)]
             .iter()
             .map(|v| std::fmt::format(format_args!("/{}", v)))
             .collect();
 
-        let rmdir_result = fs.rmdir(dir_name.as_str());
-        assert!(rmdir_result.is_ok());
+        fs.rmdir(dir_name.as_str()).unwrap();
     }
+
+    // Now check if the directory is empty.
+    let remove_first_path = fs.rmdir(first_path.as_str());
+
+    /* Assert */
+
+    assert!(remove_first_path.is_ok());
+}
+
+#[test]
+fn test_should_fail_when_mkdir_with_name_of_single_dot_and_double_dots() {
+    todo!()
+}
+
+#[test]
+fn test_should_succeed_on_basic_chdir() {
+    
+    /* Arrange */
+    
+    let fs = MemFS::new();
+    let dir1 = "/river";
+    let dir2 = "/river/ocean";
+    let file_name = "/river/ocean/sky.sk";
+
+    fs.mkdir(dir1).unwrap();
+    fs.mkdir(dir2).unwrap();
+    let fd = fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_RDONLY).unwrap();
+    fs.close(fd).unwrap();
+
+    /* Action */
+
+    let chdir1 = fs.chdir(dir1);
+    let check_dir2_exist = fs.mkdir(dir2);
+    let chdir2 = fs.chdir(dir2);
+    let check_file_exist = fs.unlink(file_name);
+
+    /* Assert */
+
+    assert!(chdir1.is_ok());
+    assert!(check_dir2_exist.is_err_and(|e| { matches!(e.err_type, MemFSErrType::EEXIST )} ));
+    assert!(chdir2.is_ok());
+    assert!(check_file_exist.is_ok());
+}
+
+#[test]
+fn test_should_fail_when_chdir_to_nonexistent_directory() {
+    
+    /* Arrange */
+
+    let fs = MemFS::new();
+    let dir1 = "/kaist";
+    let dir2 = "postech";
+    let ghost_dir = "snu";
+    
+    fs.mkdir(dir1).unwrap();
+    fs.chdir(dir1).unwrap();
+    fs.mkdir(dir2).unwrap();
+    fs.chdir(dir2).unwrap();
+    
+    /* Action */
+
+    let chdir1 = fs.chdir(ghost_dir);
+    let chdir2 = fs.chdir(dir1);
+    let rmdir1 = fs.rmdir(dir2);
+    let chdir3 = fs.chdir(dir2);
+
+    /* Assert */
+
+    assert!(chdir1.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOENT)}));
+    assert!(chdir2.is_ok());
+    assert!(rmdir1.is_ok());
+    assert!(chdir3.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOENT)}));
+}
+
+#[test]
+fn test_should_succeed_when_chdir_to_self_and_parent() {
+    
+    /* Arrange */
+    
+    let fs = MemFS::new();
+    let parent_name = "parent_folder";
+    let file_name = "place.holder";
+    fs.mkdir(parent_name).unwrap();
+    fs.chdir(parent_name).unwrap();
+    let fd = fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_RDONLY).unwrap();
+    fs.close(fd).unwrap();
+
+    /* Action */
+
+    let chdir_self = fs.chdir(".");
+    let self_test = fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_EXCL | OpenFlag::O_RDONLY);
+    let chdir_parent = fs.chdir("..");
+    let parent_test = fs.mkdir(parent_name);
+    let chdir_parent_on_root = fs.chdir("..");
+    let root_test = fs.mkdir(parent_name);
+
+    /* Assert */
+
+    assert!(chdir_self.is_ok());
+    assert!(self_test.is_err_and(|e| { matches!(e.err_type, MemFSErrType::EEXIST )}));
+    assert!(chdir_parent.is_ok());
+    assert!(parent_test.is_err_and(|e| { matches!(e.err_type, MemFSErrType::EEXIST )}));
+    assert!(chdir_parent_on_root.is_ok());
+    assert!(root_test.is_err_and(|e| { matches!(e.err_type, MemFSErrType::EEXIST )}));
+}
+
+#[test]
+fn test_should_fail_when_chdir_to_file() {
+    
+    /* Arrange */
+
+    let fs = MemFS::new();
+    let dir = "dir";
+    let file = "flie";
+    let path_with_file = "flie/nonex";
+
+    fs.mkdir(dir).unwrap();
+    let fd = fs.open(file, OpenFlag::O_CREAT | OpenFlag::O_RDONLY).unwrap();
+    fs.close(fd).unwrap();
+    fs.chdir(dir).unwrap();
+
+    /* Action */
+
+    let chdir_to_file = fs.chdir(file);
+    let chdir_to_path_with_file_component = fs.chdir(path_with_file);
+
+    /* Assert */
+
+    assert!(chdir_to_file.is_err_and(|e| {matches!(e.err_type, MemFSErrType::ENOTDIR)}));
+    assert!(chdir_to_path_with_file_component.is_err_and(|e| {matches!(e.err_type, MemFSErrType::ENOTDIR)}));
+}
+
+#[test]
+fn test_should_succeed_on_parsing_paths_with_strange_slashes() {
+    let fs = MemFS::new();
+    
+    let r1 = fs.mkdir("////one");
+    let r2 = fs.mkdir("///one//two");
+    let r3 = fs.mkdir("/one///two/three////////////four");
+    let r4 = fs.chdir("one");
+    let r5 = fs.chdir("two/////three////");
+    let r6 = fs.chdir("four/");
+    let r7 = fs.chdir("..////..//.///.//..");
+    let r8 = fs.chdir("///one////");
+    let r9 = fs.rmdir("two//////three////////////");
+    let r10 = fs.mkdir("//one///zero");
+    let r11 = fs.open("..////zero/fin.txt", OpenFlag::O_CREAT | OpenFlag::O_RDONLY);
+    let r12 = fs.chdir("two//three/four");
+    let r13 = fs.unlink("..//.././..///./..//..///...//one////zero//fin.txt");
+
+    assert!(r1.is_ok());
+    assert!(r2.is_ok());
+    assert!(r3.is_ok());
+    assert!(r4.is_ok());
+    assert!(r5.is_ok());
+    assert!(r6.is_ok());
+    assert!(r7.is_ok());
+    assert!(r8.is_ok());
+    assert!(r9.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOTEMPTY)}));
+    assert!(r10.is_ok());
+    assert!(r11.is_ok());
+    assert!(r12.is_ok());
+    assert!(r13.is_ok());
 }

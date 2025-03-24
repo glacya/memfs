@@ -10,6 +10,7 @@ bitflags! {
         const O_RDWR = 0b100;
         const O_CREAT  = 0b1000;
         const O_EXCL = 0b10000;
+        const O_APPEND = 0b100000;
     }
 }
 
