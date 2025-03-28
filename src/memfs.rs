@@ -166,20 +166,23 @@ impl MemFS {
         }
     }
 
-    pub fn chdir(&self, path: &str) -> Result<()> {
+    pub fn chdir(&mut self, path: &str) -> Result<()> {
+        println!("CHDIR({})", path);
+
         if path.is_empty() {
             return Err(MemFSErr::no_such_file_or_directory());
         }
 
-        if path.chars().nth(0).unwrap() == '/' {
-            // Absolute path. Traverse from 
-        }
-        else {
-            // Relative path
+        let dir_node = self.get_node_of_given_path(path)?;
+        let dir_guard = dir_node.read().map_err(|_| MemFSErr::poisoned_lock())?;
 
+        match &*dir_guard {
+            MemFSEntry::Directory(_) => {
+                self.cwd_node = dir_node.clone();
+                Ok(())
+            }
+            _ => Err(MemFSErr::is_not_directory())
         }
-
-        Ok(())
     }
 
     fn create(&self, path: &str, flag: OpenFlag) -> Result<()> {
@@ -454,6 +457,13 @@ impl MemFSDirNode {
             .read()
             .map_err(|_| MemFSErr::poisoned_lock())?;
 
+        print!("Entry names: ");
+        let hmap = &*guard;
+        for key in hmap.keys() {
+            print!("{}, ", key);
+        }
+        println!("");
+
         match next_elem {
             Some(_) => match guard.get(current_path) {
                 Some(v) => {
@@ -564,22 +574,36 @@ impl MemFSFileDescriptor {
 
         if let MemFSEntry::File(file) = &*guard {
             let file_guard = file.value.get();
+            let file_content = unsafe { &mut *file_guard };
 
             let lock =  self.append_mutex.lock().map_err(|_| MemFSErr::poisoned_lock());
-            
-            if !self.flag.contains(OpenFlag::O_APPEND) {
-                drop(lock);
+
+            let current_offset = if self.flag.contains(OpenFlag::O_APPEND) {
+                let mut offset_write_guard = self
+                    .file_offset
+                    .write()
+                    .map_err(|_| MemFSErr::poisoned_lock())?;
+
+                let current_file_size = file_content.len();
+
+                *offset_write_guard = current_file_size;
+                drop(offset_write_guard);
+
+                current_file_size
             }
+            else {
+                drop(lock);
+                
+                let offset_read_guard = self
+                    .file_offset
+                    .read()
+                    .map_err(|_| MemFSErr::poisoned_lock())?;
 
-            let offset_read_guard = self
-                .file_offset
-                .read()
-                .map_err(|_| MemFSErr::poisoned_lock())?;
+                let value = *offset_read_guard;
+                drop(offset_read_guard);
 
-            let current_offset = *offset_read_guard;
-            drop(offset_read_guard);
-
-            let file_content = unsafe { &mut *file_guard };
+                value
+            };
 
             let writing_content_size = size.min(buffer.len());
             let expected_offset = current_offset.saturating_add(writing_content_size);

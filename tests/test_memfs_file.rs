@@ -546,6 +546,47 @@ fn test_should_succeed_when_writing_over_the_file_size() {
 }
 
 #[test]
-fn test_check_whether_writes_on_descriptor_with_o_append_are_done_regardless_of_offset() {
-    todo!()
+fn test_check_whether_writes_on_file_descriptor_with_o_append_are_done_regardless_of_offset() {
+    
+    /* Arrange */
+
+    let file_name = "append.more";
+    let loops: usize = 256;
+    let buffer_size = 8;
+    let mut rng = rand::rng();
+
+    let fs = MemFS::new();
+    let fd = fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_APPEND | OpenFlag::O_RDWR).unwrap();
+
+    /* Action */
+
+    let mut comparison_buffer: Vec<u8> = vec![];
+    let mut offsets_after_writes = vec![];
+    let mut result_buffer = vec![0; loops * buffer_size];
+
+    for i in 0..loops {
+        let random_buffer = generate_random_vector(buffer_size);
+
+        comparison_buffer.extend(random_buffer.clone().iter());
+
+        // Seek random offset, to check whether write is performed at the end of the file.
+        fs.lseek(fd, rng.random_range(0..((i + 1) * 8)), SeekFlag::SEEK_SET).unwrap();
+
+        fs.write(fd, &random_buffer, buffer_size).unwrap();
+
+        // Get current offset.
+        let write_offset = fs.lseek(fd, 0, SeekFlag::SEEK_CUR).unwrap();
+        offsets_after_writes.push(write_offset);
+    }
+
+    fs.lseek(fd, 0, SeekFlag::SEEK_SET).unwrap();
+    fs.read(fd, &mut result_buffer, loops * buffer_size).unwrap();
+    fs.close(fd).unwrap();
+
+    /* Assert */
+
+    let expected_offsets = (0..loops).map(|v| (v + 1) * buffer_size).collect::<Vec<usize>>();
+
+    assert_eq!(result_buffer, comparison_buffer);
+    assert_eq!(offsets_after_writes, expected_offsets);
 }

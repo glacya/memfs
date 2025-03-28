@@ -202,7 +202,7 @@ fn test_should_succeed_on_basic_chdir() {
     
     /* Arrange */
     
-    let fs = MemFS::new();
+    let mut fs = MemFS::new();
     let dir1 = "/river";
     let dir2 = "/river/ocean";
     let file_name = "/river/ocean/sky.sk";
@@ -232,7 +232,7 @@ fn test_should_fail_when_chdir_to_nonexistent_directory() {
     
     /* Arrange */
 
-    let fs = MemFS::new();
+    let mut fs = MemFS::new();
     let dir1 = "/kaist";
     let dir2 = "postech";
     let ghost_dir = "snu";
@@ -262,7 +262,7 @@ fn test_should_succeed_when_chdir_to_self_and_parent() {
     
     /* Arrange */
     
-    let fs = MemFS::new();
+    let mut fs = MemFS::new();
     let parent_name = "parent_folder";
     let file_name = "place.holder";
     fs.mkdir(parent_name).unwrap();
@@ -294,13 +294,14 @@ fn test_should_fail_when_chdir_to_file() {
     
     /* Arrange */
 
-    let fs = MemFS::new();
+    let mut fs = MemFS::new();
     let dir = "dir";
+    let dir_file = "dir/flie";
     let file = "flie";
     let path_with_file = "flie/nonex";
 
     fs.mkdir(dir).unwrap();
-    let fd = fs.open(file, OpenFlag::O_CREAT | OpenFlag::O_RDONLY).unwrap();
+    let fd = fs.open(dir_file, OpenFlag::O_CREAT | OpenFlag::O_RDONLY).unwrap();
     fs.close(fd).unwrap();
     fs.chdir(dir).unwrap();
 
@@ -311,13 +312,16 @@ fn test_should_fail_when_chdir_to_file() {
 
     /* Assert */
 
+    println!("{:?}", chdir_to_file);
+    println!("{:?}", chdir_to_path_with_file_component);
+
     assert!(chdir_to_file.is_err_and(|e| {matches!(e.err_type, MemFSErrType::ENOTDIR)}));
     assert!(chdir_to_path_with_file_component.is_err_and(|e| {matches!(e.err_type, MemFSErrType::ENOTDIR)}));
 }
 
 #[test]
 fn test_should_succeed_on_parsing_paths_with_strange_slashes() {
-    let fs = MemFS::new();
+    let mut fs = MemFS::new();
     
     let r1 = fs.mkdir("////one");
     let r2 = fs.mkdir("///one//two");
