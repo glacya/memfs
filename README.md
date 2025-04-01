@@ -4,7 +4,7 @@ Implementation of simple in-memory file system in Rust
 ## Structure
 MemFS supports the following system calls.
 ```
-open, close, remove, read, write, lseek, mkdir, rmdir
+open, close, unlink, read, write, lseek, mkdir, rmdir, chdir
 ```
 
 Directory structure of MemFS is implemented using tree data structure.
