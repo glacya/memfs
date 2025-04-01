@@ -20,7 +20,7 @@ fn test_should_fail_on_opening_empty_path() {
 
     let result = fs.open("", OpenFlag::O_CREAT | OpenFlag::O_RDONLY);
 
-    assert!(result.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOENT )}))
+    assert!(result.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOENT) }))
 }
 
 #[test]
@@ -78,12 +78,14 @@ fn test_should_fail_when_opening_directory_instead_of_file() {
 fn test_should_fail_when_opening_path_of_which_middle_component_is_file_instead_of_directory() {
     let fs = MemFS::new();
     fs.mkdir("/dir1").unwrap();
-    let fd = fs.open("/dir1/dir2", OpenFlag::O_CREAT | OpenFlag::O_RDONLY).unwrap();
+    let fd = fs
+        .open("/dir1/dir2", OpenFlag::O_CREAT | OpenFlag::O_RDONLY)
+        .unwrap();
     fs.close(fd).unwrap();
 
     let open_result = fs.open("/dir1/dir2/file", OpenFlag::O_RDWR);
 
-    assert!(open_result.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOTDIR)}));
+    assert!(open_result.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOTDIR) }));
 }
 
 #[test]
@@ -203,10 +205,10 @@ fn test_should_fail_when_removing_directory_instead_of_file() {
 #[test]
 fn test_should_fail_on_removing_empty_path() {
     let fs = MemFS::new();
-    
+
     let remove_result = fs.unlink("");
 
-    assert!(remove_result.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOENT )}));
+    assert!(remove_result.is_err_and(|e| { matches!(e.err_type, MemFSErrType::ENOENT) }));
 }
 
 #[test]
@@ -547,7 +549,6 @@ fn test_should_succeed_when_writing_over_the_file_size() {
 
 #[test]
 fn test_check_whether_writes_on_file_descriptor_with_o_append_are_done_regardless_of_offset() {
-    
     /* Arrange */
 
     let file_name = "append.more";
@@ -556,7 +557,12 @@ fn test_check_whether_writes_on_file_descriptor_with_o_append_are_done_regardles
     let mut rng = rand::rng();
 
     let fs = MemFS::new();
-    let fd = fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_APPEND | OpenFlag::O_RDWR).unwrap();
+    let fd = fs
+        .open(
+            file_name,
+            OpenFlag::O_CREAT | OpenFlag::O_APPEND | OpenFlag::O_RDWR,
+        )
+        .unwrap();
 
     /* Action */
 
@@ -570,7 +576,8 @@ fn test_check_whether_writes_on_file_descriptor_with_o_append_are_done_regardles
         comparison_buffer.extend(random_buffer.clone().iter());
 
         // Seek random offset, to check whether write is performed at the end of the file.
-        fs.lseek(fd, rng.random_range(0..((i + 1) * 8)), SeekFlag::SEEK_SET).unwrap();
+        fs.lseek(fd, rng.random_range(0..((i + 1) * 8)), SeekFlag::SEEK_SET)
+            .unwrap();
 
         fs.write(fd, &random_buffer, buffer_size).unwrap();
 
@@ -580,12 +587,15 @@ fn test_check_whether_writes_on_file_descriptor_with_o_append_are_done_regardles
     }
 
     fs.lseek(fd, 0, SeekFlag::SEEK_SET).unwrap();
-    fs.read(fd, &mut result_buffer, loops * buffer_size).unwrap();
+    fs.read(fd, &mut result_buffer, loops * buffer_size)
+        .unwrap();
     fs.close(fd).unwrap();
 
     /* Assert */
 
-    let expected_offsets = (0..loops).map(|v| (v + 1) * buffer_size).collect::<Vec<usize>>();
+    let expected_offsets = (0..loops)
+        .map(|v| (v + 1) * buffer_size)
+        .collect::<Vec<usize>>();
 
     assert_eq!(result_buffer, comparison_buffer);
     assert_eq!(offsets_after_writes, expected_offsets);

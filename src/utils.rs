@@ -67,6 +67,9 @@ pub enum MemFSErrType {
     /// Used when directory is not empty.
     ENOTEMPTY,
 
+    /// Used when the target resource is used by other processes.
+    EBUSY,
+
     /// Miscellaneous
     Misc,
 }
@@ -146,6 +149,13 @@ impl MemFSErr {
         Self {
             message: "Lock poison error".to_string(),
             err_type: MemFSErrType::PoisonedLock,
+        }
+    }
+
+    pub fn busy() -> Self {
+        Self {
+            message: "Is used by other process".to_string(),
+            err_type: MemFSErrType::EBUSY,
         }
     }
 }

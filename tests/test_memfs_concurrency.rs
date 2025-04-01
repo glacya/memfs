@@ -1,4 +1,7 @@
-use memfs::{memfs::MemFS, utils::{generate_random_vector, OpenFlag, SeekFlag}};
+use memfs::{
+    memfs::MemFS,
+    utils::{OpenFlag, SeekFlag, generate_random_vector},
+};
 use rand::Rng;
 
 #[cfg(feature = "check-loom")]
@@ -85,8 +88,8 @@ fn test_only_one_should_succeed_when_removing_file_multiple_times_concurrently()
 }
 
 #[test]
-fn test_check_whether_concurrent_writes_are_atomic_and_sequential_on_file_descriptor_opened_with_o_append() {
-    
+fn test_check_whether_concurrent_writes_are_atomic_and_sequential_on_file_descriptor_opened_with_o_append()
+ {
     /* Arrange */
 
     let arc_fs = Arc::new(MemFS::new());
@@ -96,10 +99,15 @@ fn test_check_whether_concurrent_writes_are_atomic_and_sequential_on_file_descri
     let block_size = 8;
     let file_name = "conc.write";
 
-    let fd = arc_fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_RDWR | OpenFlag::O_APPEND).unwrap();
+    let fd = arc_fs
+        .open(
+            file_name,
+            OpenFlag::O_CREAT | OpenFlag::O_RDWR | OpenFlag::O_APPEND,
+        )
+        .unwrap();
 
     /* Action */
-    
+
     let mut handles = vec![];
 
     for i in 0..loops {
@@ -110,7 +118,12 @@ fn test_check_whether_concurrent_writes_are_atomic_and_sequential_on_file_descri
             let numbered_buffer = vec![value; block_size];
             let mut rng = rand::rng();
 
-            fs.lseek(fd, rng.random_range(0..((i + 1) * block_size)), SeekFlag::SEEK_SET).unwrap();
+            fs.lseek(
+                fd,
+                rng.random_range(0..((i + 1) * block_size)),
+                SeekFlag::SEEK_SET,
+            )
+            .unwrap();
             fs.write(fd, &numbered_buffer, block_size).unwrap();
         }));
     }
@@ -122,7 +135,9 @@ fn test_check_whether_concurrent_writes_are_atomic_and_sequential_on_file_descri
     arc_fs.lseek(fd, 0, SeekFlag::SEEK_SET).unwrap();
 
     let mut read_buffer = vec![0; loops * block_size];
-    let written_bytes = arc_fs.read(fd, &mut read_buffer, loops * block_size).unwrap();
+    let written_bytes = arc_fs
+        .read(fd, &mut read_buffer, loops * block_size)
+        .unwrap();
     arc_fs.close(fd).unwrap();
 
     /* Assert */
@@ -137,7 +152,10 @@ fn test_check_whether_concurrent_writes_are_atomic_and_sequential_on_file_descri
 
         assert_eq!(read_slice.to_vec(), vec![first_letter; block_size]);
 
-        frequency_map.entry(first_letter).and_modify(|v| { *v += 1 }).or_insert(1usize);
+        frequency_map
+            .entry(first_letter)
+            .and_modify(|v| *v += 1)
+            .or_insert(1usize);
     }
 
     for i in 0..basic_loops {
@@ -147,11 +165,11 @@ fn test_check_whether_concurrent_writes_are_atomic_and_sequential_on_file_descri
 
         assert_eq!(*freq, dup_loops);
     }
-
 }
 
 #[test]
-fn test_check_whether_concurrent_writes_on_file_descriptor_opened_without_o_append_are_interleaving() {
+fn test_check_whether_concurrent_writes_on_file_descriptor_opened_without_o_append_are_interleaving()
+ {
     let arc_fs = Arc::new(MemFS::new());
     let loops = 256;
     let buffer_size = 64;
@@ -177,11 +195,10 @@ fn test_check_whether_concurrent_writes_on_file_descriptor_opened_without_o_appe
     for handle in handles {
         handle.join().unwrap();
     }
-    
+
     let offset = arc_fs.lseek(fd, 0, SeekFlag::SEEK_CUR).unwrap();
 
     /* Assert */
 
     assert!(offset <= buffer_size * loops);
-
 }
