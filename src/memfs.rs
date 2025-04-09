@@ -690,6 +690,7 @@ impl MemFSFileDescriptor {
                 value
             };
 
+
             let writing_content_size = size.min(buffer.len());
             let expected_offset = current_offset.saturating_add(writing_content_size);
 
