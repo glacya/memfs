@@ -14,28 +14,26 @@ pub(crate) use std::{sync::Arc, thread};
 const TOTAL_WORKS: usize = 1usize << 16;
 
 #[test]
-#[ignore = "rewriting"]
 fn test_throughput_measure_on_creates_on_same_directory() {
-    let loops = 64;
-    let steps = 64;
+    let threads: Vec<usize> = (0..13).map(|x| 1usize << x).collect();
     let mut time_elapsed = Vec::new();
 
-    for i in 0..loops {
+    for i in threads.iter() {
         let timer = Instant::now();
 
-        helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory((i + 1) * steps);
+        helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory(*i);
 
-        let measured = timer.elapsed().as_millis();
+        let measured = timer.elapsed().as_micros();
         time_elapsed.push(measured);
     }
 
-    println!("\nResult table (create without O_EXCL)\nThread Count\tMeasured Time (ms)");
+    println!("\nResult table (create without O_EXCL)\nThread Count\tMeasured Time (us)");
     
-    for i in 0..loops {
+    for (i, thread_count) in threads.iter().enumerate() {
         let time_float = time_elapsed[i] as f64;
-        let ops_per_second = 1000.0 * (((i + 1) * steps) as f64) / time_float;
+        let ops_per_second = 1000000.0 * (TOTAL_WORKS as f64) / time_float;
 
-        println!("{}\t\t{}\t\t{}", (i + 1) * steps, time_elapsed[i], ops_per_second);
+        println!("{}\t\t{}\t\t{}", thread_count, time_elapsed[i], ops_per_second);
     }
 }
 
@@ -53,7 +51,7 @@ fn test_throughput_measure_on_creates_on_different_directory() {
         time_elapsed.push(measured);
     }
 
-    println!("\nResult table (create without O_EXCL, different directory)\nThread Count\tMeasured Time (ms)");
+    println!("\nResult table (create without O_EXCL, different directory)\nThread Count\tMeasured Time (us)");
     
     for (i, thread_count) in threads.iter().enumerate() {
         let time_float = time_elapsed[i] as f64;
@@ -64,9 +62,8 @@ fn test_throughput_measure_on_creates_on_different_directory() {
 }
 
 #[test]
-#[ignore = "rewriting"]
 fn test_throughput_measure_on_creates_with_o_excl_on_same_directory() {
-    let iterator = (0..12).map(|x| 1usize << x);
+    let iterator = (0..13).map(|x| 1usize << x);
     let threads: Vec<usize> = iterator.collect();
     let mut time_elapsed = Vec::new();
 
@@ -75,41 +72,50 @@ fn test_throughput_measure_on_creates_with_o_excl_on_same_directory() {
 
         helper_only_one_should_succeed_when_opening_file_with_o_creat_and_o_excl_concurrently_on_same_directory(*i);
 
-        let measured = timer.elapsed().as_millis();
+        let measured = timer.elapsed().as_micros();
         time_elapsed.push(measured);
     }
 
-    println!("\nResult table (create with O_EXCL)\nThread Count\tMeasured Time (ms)\tops/s");
+    println!("\nResult table (create with O_EXCL)\nThread Count\tMeasured Time (us)\tops/s");
 
     for (i, thread_count) in threads.iter().enumerate() {
         let time_float = time_elapsed[i] as f64;
-        let ops_per_second = 1000.0 * (TOTAL_WORKS as f64) / time_float;
+        let ops_per_second = 1000000.0 * (TOTAL_WORKS as f64) / time_float;
 
         println!("{}\t\t{}\t\t{}", thread_count, time_elapsed[i], ops_per_second);
     }
 }
 
-fn helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory(loops: usize) {
+fn helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory(thread_count: usize) {
 
     /* Arrange */
     
     let arc_fs = Arc::new(MemFS::new());
     let file_prefix = "file";
+    let work_per_thread = TOTAL_WORKS / thread_count;
     let mut handles = Vec::new();
 
     /* Action */
 
-    for i in 0..loops {
+    for i in 0..thread_count {
         let fs = arc_fs.clone();
 
         handles.push(thread::spawn(move || {
-            let file_name = std::fmt::format(format_args!("{}{}.txt", file_prefix, i));
-            if fs.open(file_name.as_str(), OpenFlag::O_CREAT | OpenFlag::O_RDONLY).is_ok() {
-                1
-            }
-            else {
-                0
-            }
+            let mut count = 0;
+
+            for j in 0..work_per_thread {
+                let file_name = std::fmt::format(format_args!("{}{}.txt", file_prefix, j + i * work_per_thread));
+
+                let fd = fs.open(file_name.as_str(), OpenFlag::O_CREAT | OpenFlag::O_RDONLY);
+
+                if fd.is_ok() {
+                    count += 1;
+
+                    // TODO: Close?
+                }
+            } 
+
+            count
         }));
     }
 
@@ -121,7 +127,7 @@ fn helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory
 
     /* Assert */
 
-    assert_eq!(success_count, loops);
+    assert_eq!(success_count, TOTAL_WORKS);
 }
 
 fn helper_only_one_should_succeed_when_opening_file_with_o_creat_and_o_excl_concurrently_on_same_directory(thread_count: usize)
@@ -129,26 +135,32 @@ fn helper_only_one_should_succeed_when_opening_file_with_o_creat_and_o_excl_conc
     /* Arrange */
 
     let arc_fs = Arc::new(MemFS::new());
-    let file_name = "/ran.dom";
+    let file_suffix = "ran.dom";
+    let work_per_thread = TOTAL_WORKS / thread_count;
     let mut handles = Vec::new();
+
+    for i in 0..thread_count {
+        let dir_name = std::fmt::format(format_args!("dir{}", i));
+        arc_fs.mkdir(dir_name.as_str()).unwrap();
+    }
 
     /* Action */
 
-    for _ in 0..thread_count {
+    for i in 0..thread_count {
         let fs = arc_fs.clone();
 
         handles.push(thread::spawn(move || {
-            if fs
-                .open(
-                    file_name,
-                    OpenFlag::O_CREAT | OpenFlag::O_EXCL | OpenFlag::O_RDWR,
-                )
-                .is_ok()
-            {
-                1
-            } else {
-                0
+            let file_name = std::fmt::format(format_args!("dir{}/{}", i, file_suffix));
+            let mut count = 0;
+
+            for _ in 0..work_per_thread {
+                
+                if fs.open(file_name.as_str(), OpenFlag::O_CREAT | OpenFlag::O_EXCL | OpenFlag::O_RDWR).is_ok() {
+                    count += 1;
+                }
             }
+
+            count
         }));
     }
 
@@ -160,7 +172,7 @@ fn helper_only_one_should_succeed_when_opening_file_with_o_creat_and_o_excl_conc
 
     /* Assert */
 
-    assert_eq!(success_count, 1);
+    assert_eq!(success_count, thread_count);
 }
 
 fn helper_all_should_succeed_when_creating_multiple_files_on_different_directory(thread_counts: usize) {

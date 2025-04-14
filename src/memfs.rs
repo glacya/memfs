@@ -26,7 +26,6 @@ impl MemFS {
         Self {
             root: root.clone(),
             cwd_node: root,
-            // cwd_path: Arc::new(RwLock::new("/".to_string())),
             file_descriptiors: Arc::new(RwLock::new(HashMap::new())),
             file_descriptor_count: Arc::new(Mutex::new(0)),
         }
