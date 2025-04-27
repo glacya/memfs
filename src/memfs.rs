@@ -1,7 +1,8 @@
+use dashmap::{DashMap, Entry};
+
 use crate::utils::{MemFSErr, OpenFlag, Result, SeekFlag};
 use std::{
     cell::UnsafeCell,
-    collections::{HashMap, hash_map::Entry},
     iter::Peekable,
     sync::{Arc, Mutex, RwLock, Weak},
 };
@@ -9,10 +10,9 @@ use std::{
 /// Implementation of In-Memory file system that supports the following system calls:
 /// [open], [close], [unlink], [read], [write], [lseek], [mkdir], [rmdir]
 pub struct MemFS {
-    root: Arc<RwLock<MemFSEntry>>,
-    cwd_node: Arc<RwLock<MemFSEntry>>,
-    // cwd_path: Arc<RwLock<String>>,
-    file_descriptiors: Arc<RwLock<HashMap<usize, MemFSFileDescriptor>>>,
+    root: Arc<MemFSEntry>,
+    cwd_node: Arc<MemFSEntry>,
+    file_descriptors: Arc<DashMap<usize, MemFSFileDescriptor>>,
     file_descriptor_count: Arc<Mutex<usize>>,
 }
 
@@ -21,12 +21,12 @@ unsafe impl Send for MemFS {}
 
 impl MemFS {
     pub fn new() -> Self {
-        let root = Arc::new(RwLock::new(MemFSEntry::Directory(MemFSDirNode::new())));
+        let root = Arc::new(MemFSEntry::Directory(MemFSDirNode::new()));
 
         Self {
             root: root.clone(),
             cwd_node: root,
-            file_descriptiors: Arc::new(RwLock::new(HashMap::new())),
+            file_descriptors: Arc::new(DashMap::new()),
             file_descriptor_count: Arc::new(Mutex::new(0)),
         }
     }
@@ -37,60 +37,70 @@ impl MemFS {
             return Err(MemFSErr::invalid_value());
         }
 
-        if flag.contains(OpenFlag::O_CREAT) {
-            self.create(path, OpenFlag::O_EXCL & (flag.clone()))?;
-        }
+        let parent_node = self.get_parent_directory_node_of_given_path(path)?;
+        let last_elem = Self::get_last_component_of_path(path)?;
 
-        let item_node = self.get_node_of_given_path(path)?;
+        match self.resolve_dir_and_entry(last_elem, &*parent_node)? {
+            Entry::Vacant(v) => {
+                if flag.contains(OpenFlag::O_CREAT) {
+                    // If the entry is empty and O_CREAT is specified, add the file entry.
+                    let file_node = Arc::new(MemFSEntry::File(MemFSFileNode::new()));
 
-        let item_guard = item_node.read().map_err(|_| MemFSErr::poisoned_lock())?;
+                    let fd = self.allocate_file_descriptor()?;
+                    
+                    v.insert(file_node.clone());
 
-        match &*item_guard {
-            MemFSEntry::File(_) => {
-                let fd = self.allocate_file_descriptor()?;
+                    self.file_descriptors.insert(fd, MemFSFileDescriptor::new(fd, flag & !(OpenFlag::O_CREAT), file_node));
 
-                let mut guard = self
-                    .file_descriptiors
-                    .write()
-                    .map_err(|_| MemFSErr::poisoned_lock())?;
+                    Ok(fd)
+                }
+                else {
+                    Err(MemFSErr::no_such_file_or_directory())
+                }
+            },
+            Entry::Occupied(v) => {
+                if flag.contains(OpenFlag::O_CREAT | OpenFlag::O_EXCL) {
+                    Err(MemFSErr::already_exists())
+                }
+                else {
+                    let file_node = v.get();
 
-                guard.insert(
-                    fd,
-                    MemFSFileDescriptor::new(fd, flag & !(OpenFlag::O_CREAT), item_node.clone()),
-                );
+                    match &**file_node {
+                        MemFSEntry::File(_) => {
+                            let fd = self.allocate_file_descriptor()?;
 
-                Ok(fd)
-            }
-            _ => Err(MemFSErr::is_directory()),
+                            self.file_descriptors.insert(fd, MemFSFileDescriptor::new(fd, flag & !(OpenFlag::O_CREAT), file_node.clone()));
+
+                            Ok(fd)
+                        }
+                        _ => Err(MemFSErr::is_directory())
+                    }
+                }
+            },
         }
     }
 
     pub fn close(&self, fd: usize) -> Result<()> {
-        let mut guard = self
-            .file_descriptiors
-            .write()
-            .map_err(|_| MemFSErr::poisoned_lock())?;
+        let entry = self.file_descriptors.entry(fd);
 
-        if guard.contains_key(&fd) {
-            guard.remove(&fd);
-            Ok(())
-        } else {
-            Err(MemFSErr::bad_file_descriptor())
+        match entry {
+            Entry::Occupied(e) => {
+                e.remove();
+                Ok(())
+            },
+            Entry::Vacant(_) => Err(MemFSErr::bad_file_descriptor())
         }
     }
 
     pub fn unlink(&self, path: &str) -> Result<()> {
         let dir_node = self.get_parent_directory_node_of_given_path(path)?;
         let last_elem = Self::get_last_component_of_path(path)?;
-        let dir_guard = dir_node.write().map_err(|_| MemFSErr::poisoned_lock())?;
 
-        match &*dir_guard {
+        match &*dir_node {
             MemFSEntry::Directory(dir) => dir.remove_file(last_elem),
             MemFSEntry::File(_) => Err(MemFSErr::no_such_file_or_directory()),
             MemFSEntry::ResolvedAsRoot => {
-                let root_guard = self.root.write().map_err(|_| MemFSErr::poisoned_lock())?;
-
-                if let MemFSEntry::Directory(dir) = &*root_guard {
+                if let MemFSEntry::Directory(dir) = &*self.root {
                     dir.remove_file(last_elem)
                 } else {
                     Err(MemFSErr::no_such_file_or_directory())
@@ -100,12 +110,7 @@ impl MemFS {
     }
 
     pub fn read(&self, fd: usize, buffer: &mut Vec<u8>, size: usize) -> Result<usize> {
-        let fd_map = self
-            .file_descriptiors
-            .read()
-            .map_err(|_| MemFSErr::poisoned_lock())?;
-
-        if let Some(v) = fd_map.get(&fd) {
+        if let Some(v) = self.file_descriptors.get(&fd) {
             unsafe { v.read_file(buffer, size) }
         } else {
             Err(MemFSErr::bad_file_descriptor())
@@ -113,12 +118,7 @@ impl MemFS {
     }
 
     pub fn write(&self, fd: usize, buffer: &Vec<u8>, size: usize) -> Result<usize> {
-        let fd_map = self
-            .file_descriptiors
-            .read()
-            .map_err(|_| MemFSErr::poisoned_lock())?;
-
-        if let Some(v) = fd_map.get(&fd) {
+        if let Some(v) = self.file_descriptors.get(&fd) {
             unsafe { v.write_file(buffer, size) }
         } else {
             Err(MemFSErr::bad_file_descriptor())
@@ -126,12 +126,7 @@ impl MemFS {
     }
 
     pub fn lseek(&self, fd: usize, offset: usize, flag: SeekFlag) -> Result<usize> {
-        let fd_map = self
-            .file_descriptiors
-            .read()
-            .map_err(|_| MemFSErr::poisoned_lock())?;
-
-        if let Some(v) = fd_map.get(&fd) {
+        if let Some(v) = self.file_descriptors.get(&fd) {
             unsafe { v.seek_file(offset, flag) }
         } else {
             Err(MemFSErr::bad_file_descriptor())
@@ -152,9 +147,7 @@ impl MemFS {
             return Err(MemFSErr::already_exists());
         }
 
-        let dir_guard = dir_node.write().map_err(|_| MemFSErr::poisoned_lock())?;
-
-        match &*dir_guard {
+        match &*dir_node {
             MemFSEntry::Directory(dir) => dir.create_new_directory(last_elem, dir_node.clone()),
             MemFSEntry::File(_) => Err(MemFSErr::no_such_file_or_directory()),
             MemFSEntry::ResolvedAsRoot => Err(MemFSErr::already_exists()),
@@ -175,9 +168,7 @@ impl MemFS {
             return Err(MemFSErr::is_not_empty());
         }
 
-        let dir_guard = dir_node.write().map_err(|_| MemFSErr::poisoned_lock())?;
-
-        match &*dir_guard {
+        match &*dir_node {
             MemFSEntry::Directory(dir) => dir.remove_directory(last_elem),
             MemFSEntry::File(_) => Err(MemFSErr::no_such_file_or_directory()),
             MemFSEntry::ResolvedAsRoot => Err(MemFSErr::busy()),
@@ -195,9 +186,8 @@ impl MemFS {
         }
 
         let dir_node = self.get_node_of_given_path(path)?;
-        let dir_guard = dir_node.read().map_err(|_| MemFSErr::poisoned_lock())?;
 
-        match &*dir_guard {
+        match &*dir_node {
             MemFSEntry::Directory(_) => {
                 self.cwd_node = dir_node.clone();
 
@@ -214,17 +204,17 @@ impl MemFS {
         }
     }
 
-    fn create(&self, path: &str, flag: OpenFlag) -> Result<()> {
-        let dir_node = self.get_parent_directory_node_of_given_path(path)?;
-        let last_elem = Self::get_last_component_of_path(path)?;
-        let dir_guard = dir_node.write().map_err(|_| MemFSErr::poisoned_lock())?;
+    // fn create(&self, path: &str, flag: OpenFlag) -> Result<()> {
+    //     let dir_node = self.get_parent_directory_node_of_given_path(path)?;
+    //     let last_elem = Self::get_last_component_of_path(path)?;
+    //     let dir_guard = dir_node.write().map_err(|_| MemFSErr::poisoned_lock())?;
 
-        match &*dir_guard {
-            MemFSEntry::Directory(dir) => dir.create_new_file(last_elem, flag),
-            MemFSEntry::File(_) => Err(MemFSErr::no_such_file_or_directory()),
-            MemFSEntry::ResolvedAsRoot => Err(MemFSErr::is_directory()),
-        }
-    }
+    //     match &*dir_guard {
+    //         MemFSEntry::Directory(dir) => dir.create_new_file(last_elem, flag),
+    //         MemFSEntry::File(_) => Err(MemFSErr::no_such_file_or_directory()),
+    //         MemFSEntry::ResolvedAsRoot => Err(MemFSErr::is_directory()),
+    //     }
+    // }
 
     fn path_str_to_iter(&self, path: &str) -> Result<Peekable<impl Iterator<Item = String>>> {
         if path.is_empty() {
@@ -270,7 +260,7 @@ impl MemFS {
             .ok_or(MemFSErr::no_such_file_or_directory())
     }
 
-    fn get_node_of_given_path(&self, path: &str) -> Result<Arc<RwLock<MemFSEntry>>> {
+    fn get_node_of_given_path(&self, path: &str) -> Result<Arc<MemFSEntry>> {
         if path.is_empty() {
             return Err(MemFSErr::no_such_file_or_directory());
         }
@@ -285,15 +275,15 @@ impl MemFS {
             };
         }
 
-        let guard = if Self::is_absolute_path(path) {
+        let starting_node = if Self::is_absolute_path(path) {
             // Absolute path
-            self.root.read().map_err(|_| MemFSErr::poisoned_lock())
+            self.root.clone()
         } else {
             // Relative path
-            self.cwd_node.read().map_err(|_| MemFSErr::poisoned_lock())
-        }?;
+            self.cwd_node.clone()
+        };
 
-        match &*guard {
+        match &*starting_node {
             MemFSEntry::Directory(dir) => dir.search_entry_with_path(iter),
             MemFSEntry::File(_) => Err(MemFSErr::no_such_file_or_directory()),
             MemFSEntry::ResolvedAsRoot => Ok(self.root.clone()),
@@ -303,7 +293,7 @@ impl MemFS {
     fn get_parent_directory_node_of_given_path(
         &self,
         path: &str,
-    ) -> Result<Arc<RwLock<MemFSEntry>>> {
+    ) -> Result<Arc<MemFSEntry>> {
         if path.is_empty() {
             return Err(MemFSErr::no_such_file_or_directory());
         }
@@ -318,15 +308,15 @@ impl MemFS {
             };
         }
 
-        let guard = if Self::is_absolute_path(path) {
+        let starting_node = if Self::is_absolute_path(path) {
             // Absolute path
-            self.root.read().map_err(|_| MemFSErr::poisoned_lock())
+            self.root.clone()
         } else {
             // Relative path
-            self.cwd_node.read().map_err(|_| MemFSErr::poisoned_lock())
-        }?;
+            self.cwd_node.clone()
+        };
 
-        match &*guard {
+        match &*starting_node {
             MemFSEntry::Directory(dir) => dir.search_entry_with_path(iter),
             MemFSEntry::File(_) => Err(MemFSErr::no_such_file_or_directory()),
             MemFSEntry::ResolvedAsRoot => Ok(self.root.clone()),
@@ -344,6 +334,21 @@ impl MemFS {
 
         Ok(fd)
     }
+
+    fn resolve_dir_and_entry<'a>(&'a self, last_elem: &str, parent_node: &'a MemFSEntry) -> Result<Entry<'a, String, Arc<MemFSEntry>>> {
+        match parent_node {
+            MemFSEntry::Directory(dir) => {
+                Ok(dir.children.entry(last_elem.to_string()))
+            },
+            MemFSEntry::ResolvedAsRoot => {
+                match &*self.root {
+                    MemFSEntry::Directory(rootdir) => Ok(rootdir.children.entry(last_elem.to_string())),
+                    _ => return Err(MemFSErr::no_such_file_or_directory()),
+                }
+            },
+            MemFSEntry::File(_) => Err(MemFSErr::is_not_directory()),
+        }
+    }
 }
 
 unsafe impl Sync for MemFSDirNode {}
@@ -351,128 +356,104 @@ unsafe impl Send for MemFSDirNode {}
 
 #[derive(Clone)]
 pub struct MemFSDirNode {
-    parent: Option<Weak<RwLock<MemFSEntry>>>,
-    children: Arc<RwLock<HashMap<String, Arc<RwLock<MemFSEntry>>>>>,
+    parent: Option<Weak<MemFSEntry>>,
+    children: Arc<DashMap<String, Arc<MemFSEntry>>>,
 }
 
 impl MemFSDirNode {
     pub fn new() -> Self {
         Self {
             parent: None,
-            children: Arc::new(RwLock::new(HashMap::new())),
+            children: Arc::new(DashMap::new()),
         }
     }
 
-    pub fn with_parent(parent: Weak<RwLock<MemFSEntry>>) -> Self {
+    pub fn with_parent(parent: Weak<MemFSEntry>) -> Self {
         Self {
             parent: Some(parent),
-            children: Arc::new(RwLock::new(HashMap::new())),
+            children: Arc::new(DashMap::new()),
         }
     }
 
     /// Creating new file with O_CREAT flag should not fail even if there is already a file with same name.
     /// However, if O_EXCL flag is given along with O_CREAT, creating new file with existing file name
     /// must fail.
-    fn create_new_file(&self, file_name: &str, flag: OpenFlag) -> Result<()> {
-        let mut guard = self
-            .children
-            .write()
-            .map_err(|_| MemFSErr::poisoned_lock())?;
+    // fn create_new_file(&self, file_name: &str, flag: OpenFlag) -> Result<()> {
+    //     match self.children.entry(file_name.to_string()) {
+    //         Entry::Vacant(v) => {
+    //             v.insert(Arc::new(
+    //                 MemFSEntry::File(MemFSFileNode::new()),
+    //             ));
+    //         }
+    //         Entry::Occupied(_) => {
+    //             if flag.contains(OpenFlag::O_EXCL) {
+    //                 return Err(MemFSErr::already_exists());
+    //             }
+    //         }
+    //     }
 
-        match guard.entry(file_name.to_string()) {
-            Entry::Vacant(v) => {
-                v.insert(Arc::new(RwLock::new(
-                    MemFSEntry::File(MemFSFileNode::new()),
-                )));
-            }
-            Entry::Occupied(_) => {
-                if flag.contains(OpenFlag::O_EXCL) {
-                    return Err(MemFSErr::already_exists());
-                }
-            }
-        }
-
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     fn create_new_directory(
         &self,
         dir_name: &str,
-        parent_ptr: Arc<RwLock<MemFSEntry>>,
+        parent_ptr: Arc<MemFSEntry>,
     ) -> Result<()> {
-        let mut guard = self
-            .children
-            .write()
-            .map_err(|_| MemFSErr::poisoned_lock())?;
-
-        match guard.entry(dir_name.to_string()) {
+        match self.children.entry(dir_name.to_string()) {
             Entry::Occupied(_) => Err(MemFSErr::already_exists()),
             Entry::Vacant(v) => {
-                v.insert(Arc::new(RwLock::new(MemFSEntry::Directory(
+                v.insert(Arc::new(MemFSEntry::Directory(
                     MemFSDirNode::with_parent(Arc::downgrade(&parent_ptr)),
-                ))));
+                )));
                 Ok(())
             }
         }
     }
 
     fn remove_file(&self, file_name: &str) -> Result<()> {
-        let mut guard = self
-            .children
-            .write()
-            .map_err(|_| MemFSErr::poisoned_lock())?;
+        match self.children.entry(file_name.to_string()) {
+            Entry::Occupied(v) => {
+                let inner = v.get();
 
-        if guard.contains_key(file_name) {
-            let entry = guard.get(file_name).unwrap();
-            let entry_guard = entry.write().map_err(|_| MemFSErr::poisoned_lock())?;
-
-            if let MemFSEntry::Directory(_) = *entry_guard {
-                return Err(MemFSErr::is_directory());
-            }
-        } else {
-            return Err(MemFSErr::no_such_file_or_directory());
+                if let MemFSEntry::File(_) = &**inner {
+                    v.remove();
+                    Ok(())
+                }
+                else {
+                    Err(MemFSErr::is_directory())
+                }
+            },
+            Entry::Vacant(_) => Err(MemFSErr::no_such_file_or_directory())
         }
-
-        guard.remove_entry(file_name);
-
-        Ok(())
     }
 
     fn remove_directory(&self, dir_name: &str) -> Result<()> {
-        let mut guard = self
-            .children
-            .write()
-            .map_err(|_| MemFSErr::poisoned_lock())?;
+        match self.children.entry(dir_name.to_string()) {
+            Entry::Occupied(v) => {
+                let inner = v.get();
 
-        if guard.contains_key(dir_name) {
-            let entry = guard.get(dir_name).unwrap();
-            let entry_guard = entry.write().map_err(|_| MemFSErr::poisoned_lock())?;
-
-            if let MemFSEntry::Directory(dir_node) = &*entry_guard {
-                let children_guard = dir_node
-                    .children
-                    .read()
-                    .map_err(|_| MemFSErr::poisoned_lock())?;
-
-                if !children_guard.is_empty() {
-                    return Err(MemFSErr::is_not_empty());
+                if let MemFSEntry::Directory(dir_node) = &**inner {
+                    if dir_node.children.is_empty() {
+                        v.remove();
+                        Ok(())
+                    }
+                    else {
+                        Err(MemFSErr::is_not_empty())
+                    }
                 }
-            } else {
-                return Err(MemFSErr::is_not_directory());
-            }
-        } else {
-            return Err(MemFSErr::no_such_file_or_directory());
+                else {
+                    Err(MemFSErr::is_not_directory())
+                }
+            },
+            Entry::Vacant(_) => Err(MemFSErr::no_such_file_or_directory())
         }
-
-        guard.remove_entry(dir_name);
-
-        Ok(())
     }
 
     fn search_entry_with_path(
         &self,
         mut iter: Peekable<impl Iterator<Item = String>>,
-    ) -> Result<Arc<RwLock<MemFSEntry>>> {
+    ) -> Result<Arc<MemFSEntry>> {
         let current_elem = iter.next();
 
         let cv = current_elem.unwrap();
@@ -481,25 +462,17 @@ impl MemFSDirNode {
         let next_elem = iter.peek();
 
         // println!("{}, {:?}", current_path, next_elem);
-
-        let guard = self
-            .children
-            .read()
-            .map_err(|_| MemFSErr::poisoned_lock())?;
-
         // println!("Entries:");
-        // let hmap = &*guard;
-        // for (key, entry) in hmap {
+        
+        // for (key, entry) in self.children.iter() {
         //     println!("{} -> {:?}", key, Arc::as_ptr(&entry));
         // }
         // println!("{} entries.", hmap.len());
 
         match next_elem {
-            Some(_) => match guard.get(current_path) {
+            Some(_) => match self.children.get(current_path) {
                 Some(v) => {
-                    let inner_guard = v.read().map_err(|_| MemFSErr::poisoned_lock())?;
-
-                    match &*inner_guard {
+                    match &**v {
                         MemFSEntry::Directory(dir) => dir.search_entry_with_path(iter),
                         MemFSEntry::File(_) => Err(MemFSErr::is_not_directory()),
                         _ => unreachable!(),
@@ -511,10 +484,7 @@ impl MemFSDirNode {
                         ".." => match &self.parent {
                             Some(parent) => {
                                 if let Some(inner) = parent.upgrade() {
-                                    let inner_guard =
-                                        inner.read().map_err(|_| MemFSErr::poisoned_lock())?;
-
-                                    if let MemFSEntry::Directory(dir) = &*inner_guard {
+                                    if let MemFSEntry::Directory(dir) = &*inner {
                                         dir.search_entry_with_path(iter)
                                     } else {
                                         Err(MemFSErr::is_not_directory())
@@ -531,16 +501,13 @@ impl MemFSDirNode {
             },
             None => {
                 // Now at the end of path string. current_elem should be the one you looking for.
-                match guard.get(current_path) {
+                match self.children.get(current_path) {
                     Some(v) => Ok(v.clone()),
                     None => match current_path {
                         ".." => match &self.parent {
                             Some(parent) => {
                                 if let Some(inner) = parent.upgrade() {
-                                    let inner_guard =
-                                        inner.read().map_err(|_| MemFSErr::poisoned_lock())?;
-
-                                    if let MemFSEntry::Directory(_) = &*inner_guard {
+                                    if let MemFSEntry::Directory(_) = &*inner {
                                         Ok(inner.clone())
                                     } else {
                                         Err(MemFSErr::is_not_directory())
@@ -549,7 +516,7 @@ impl MemFSDirNode {
                                     Err(MemFSErr::no_such_file_or_directory())
                                 }
                             }
-                            None => Ok(Arc::new(RwLock::new(MemFSEntry::ResolvedAsRoot))),
+                            None => Ok(Arc::new(MemFSEntry::ResolvedAsRoot)),
                         },
                         _ => Err(MemFSErr::no_such_file_or_directory()),
                     },
@@ -587,12 +554,12 @@ struct MemFSFileDescriptor {
     _number: usize,
     flag: OpenFlag,
     file_offset: Arc<RwLock<usize>>,
-    entry: Arc<RwLock<MemFSEntry>>,
+    entry: Arc<MemFSEntry>,
     append_mutex: Arc<Mutex<()>>,
 }
 
 impl MemFSFileDescriptor {
-    pub fn new(number: usize, flag: OpenFlag, entry: Arc<RwLock<MemFSEntry>>) -> Self {
+    pub fn new(number: usize, flag: OpenFlag, entry: Arc<MemFSEntry>) -> Self {
         Self {
             _number: number,
             flag,
@@ -607,9 +574,7 @@ impl MemFSFileDescriptor {
             return Err(MemFSErr::bad_file_descriptor());
         }
 
-        let guard = self.entry.read().map_err(|_| MemFSErr::poisoned_lock())?;
-
-        if let MemFSEntry::File(file) = &*guard {
+        if let MemFSEntry::File(file) = &*self.entry {
             let file_guard = file.value.get();
 
             let offset_read_guard = self
@@ -652,9 +617,7 @@ impl MemFSFileDescriptor {
             return Err(MemFSErr::bad_file_descriptor());
         }
 
-        let guard = self.entry.read().map_err(|_| MemFSErr::poisoned_lock())?;
-
-        if let MemFSEntry::File(file) = &*guard {
+        if let MemFSEntry::File(file) = &*self.entry {
             let file_guard = file.value.get();
             let file_content = unsafe { &mut *file_guard };
 
@@ -719,12 +682,11 @@ impl MemFSFileDescriptor {
             .read()
             .map_err(|_| MemFSErr::poisoned_lock())?;
 
-        let fg = self.entry.read().map_err(|_| MemFSErr::poisoned_lock())?;
         let current_offset = *offset_guard;
 
         drop(offset_guard);
 
-        let maximum_offset = if let MemFSEntry::File(file) = &*fg {
+        let maximum_offset = if let MemFSEntry::File(file) = &*self.entry {
             let inner_guard = file.value.get();
 
             unsafe { &*inner_guard }.len()

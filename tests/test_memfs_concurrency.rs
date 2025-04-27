@@ -13,80 +13,41 @@ pub(crate) use std::{sync::Arc, thread};
 
 const TOTAL_WORKS: usize = 1usize << 16;
 
-#[test]
-fn test_throughput_measure_on_creates_on_same_directory() {
+macro_rules! test_throughput {
+    ($name:ident, $func:expr) => {
+        #[test]
+        fn $name() {
+            throughput_reporter($func);
+        }
+    };
+}
+
+fn throughput_reporter<F>(f: F) where F: Fn(usize) -> u128 {
     let threads: Vec<usize> = (0..13).map(|x| 1usize << x).collect();
     let mut time_elapsed = Vec::new();
 
     for i in threads.iter() {
-        let timer = Instant::now();
-
-        helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory(*i);
-
-        let measured = timer.elapsed().as_micros();
+        let measured = f(*i);
         time_elapsed.push(measured);
     }
 
-    println!("\nResult table (create without O_EXCL)\nThread Count\tMeasured Time (us)");
+    println!("\nResult\n|Threads|Time(us)|ops/s|\n|---|-----|-----|");
     
     for (i, thread_count) in threads.iter().enumerate() {
         let time_float = time_elapsed[i] as f64;
         let ops_per_second = 1000000.0 * (TOTAL_WORKS as f64) / time_float;
 
-        println!("{}\t\t{}\t\t{}", thread_count, time_elapsed[i], ops_per_second);
+        println!("|{}|{}|{:.2}|", thread_count, time_elapsed[i], ops_per_second);
     }
 }
 
-#[test]
-fn test_throughput_measure_on_creates_on_different_directory() {
-    let threads: Vec<usize> = (0..13).map(|x| 1usize << x).collect();
-    let mut time_elapsed = Vec::new();
+test_throughput!(test_throughput_measure_on_creates_on_same_directory, helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory);
+test_throughput!(test_throughput_measure_on_creates_on_different_directory, helper_all_should_succeed_when_creating_multiple_files_on_different_directory);
+test_throughput!(test_throughput_measure_on_creates_with_o_excl_on_same_directory, helper_only_one_should_succeed_when_opening_file_with_o_creat_and_o_excl_concurrently_on_same_directory);
+test_throughput!(test_throughput_measure_on_removes_on_different_directory, helper_all_should_succeed_when_removing_multiple_files_on_different_directory);
 
-    for i in threads.iter() {
-        let timer = Instant::now();
 
-        helper_all_should_succeed_when_creating_multiple_files_on_different_directory(*i);
-
-        let measured = timer.elapsed().as_micros();
-        time_elapsed.push(measured);
-    }
-
-    println!("\nResult table (create without O_EXCL, different directory)\nThread Count\tMeasured Time (us)");
-    
-    for (i, thread_count) in threads.iter().enumerate() {
-        let time_float = time_elapsed[i] as f64;
-        let ops_per_second = 1000000.0 * (TOTAL_WORKS as f64) / time_float;
-
-        println!("{}\t\t{}\t\t{}", thread_count, time_elapsed[i], ops_per_second);
-    }
-}
-
-#[test]
-fn test_throughput_measure_on_creates_with_o_excl_on_same_directory() {
-    let iterator = (0..13).map(|x| 1usize << x);
-    let threads: Vec<usize> = iterator.collect();
-    let mut time_elapsed = Vec::new();
-
-    for i in threads.iter() {
-        let timer = Instant::now();
-
-        helper_only_one_should_succeed_when_opening_file_with_o_creat_and_o_excl_concurrently_on_same_directory(*i);
-
-        let measured = timer.elapsed().as_micros();
-        time_elapsed.push(measured);
-    }
-
-    println!("\nResult table (create with O_EXCL)\nThread Count\tMeasured Time (us)\tops/s");
-
-    for (i, thread_count) in threads.iter().enumerate() {
-        let time_float = time_elapsed[i] as f64;
-        let ops_per_second = 1000000.0 * (TOTAL_WORKS as f64) / time_float;
-
-        println!("{}\t\t{}\t\t{}", thread_count, time_elapsed[i], ops_per_second);
-    }
-}
-
-fn helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory(thread_count: usize) {
+fn helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory(thread_count: usize) -> u128 {
 
     /* Arrange */
     
@@ -94,8 +55,10 @@ fn helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory
     let file_prefix = "file";
     let work_per_thread = TOTAL_WORKS / thread_count;
     let mut handles = Vec::new();
+    let timer = Instant::now();
 
     /* Action */
+
 
     for i in 0..thread_count {
         let fs = arc_fs.clone();
@@ -118,6 +81,58 @@ fn helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory
             count
         }));
     }
+    
+    let mut success_count = 0;
+    
+    for handle in handles {
+        success_count += handle.join().unwrap_or_else(|_| 0);
+    }
+    
+    let measured = timer.elapsed().as_micros();
+
+    /* Assert */
+
+    assert_eq!(success_count, TOTAL_WORKS);
+
+    measured
+}
+
+fn helper_all_should_succeed_when_creating_multiple_files_on_different_directory(thread_count: usize) -> u128 {
+
+    /* Arrange */
+    
+    let arc_fs = Arc::new(MemFS::new());
+    let file_name = "eternal.return";
+    let work_per_thread = TOTAL_WORKS / thread_count;
+    let mut handles = Vec::new();
+
+    for i in 0..thread_count {
+        let dir_name = std::fmt::format(format_args!("dir{}", i));
+        
+        arc_fs.mkdir(dir_name.as_str()).unwrap();
+    }
+    
+    let timer = Instant::now();
+
+    /* Action */
+
+    for i in 0..thread_count {
+        let fs = arc_fs.clone();
+
+        handles.push(thread::spawn(move || {
+            let mut open_success = 0;
+
+            for j in 0..work_per_thread {
+                let file_name = std::fmt::format(format_args!("dir{}/{}{}", i, j, file_name));
+
+                if fs.open(file_name.as_str(), OpenFlag::O_CREAT | OpenFlag::O_RDONLY).is_ok() {
+                    open_success += 1;
+                }
+            }
+
+            open_success
+        }));
+    }
 
     let mut success_count = 0;
 
@@ -125,12 +140,16 @@ fn helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory
         success_count += handle.join().unwrap_or_else(|_| 0);
     }
 
+    let measured = timer.elapsed().as_micros();
+
     /* Assert */
 
     assert_eq!(success_count, TOTAL_WORKS);
+
+    measured
 }
 
-fn helper_only_one_should_succeed_when_opening_file_with_o_creat_and_o_excl_concurrently_on_same_directory(thread_count: usize)
+fn helper_only_one_should_succeed_when_opening_file_with_o_creat_and_o_excl_concurrently_on_same_directory(thread_count: usize) -> u128
  {
     /* Arrange */
 
@@ -143,6 +162,8 @@ fn helper_only_one_should_succeed_when_opening_file_with_o_creat_and_o_excl_conc
         let dir_name = std::fmt::format(format_args!("dir{}", i));
         arc_fs.mkdir(dir_name.as_str()).unwrap();
     }
+
+    let timer = Instant::now();
 
     /* Action */
 
@@ -170,60 +191,87 @@ fn helper_only_one_should_succeed_when_opening_file_with_o_creat_and_o_excl_conc
         success_count += handle.join().unwrap_or_else(|_| 0);
     }
 
+    let measured = timer.elapsed().as_micros();
+
     /* Assert */
 
     assert_eq!(success_count, thread_count);
+
+    measured
 }
 
-fn helper_all_should_succeed_when_creating_multiple_files_on_different_directory(thread_counts: usize) {
+fn helper_all_should_succeed_when_removing_multiple_files_on_different_directory(thread_count: usize) -> u128 {
 
     /* Arrange */
-    
+
     let arc_fs = Arc::new(MemFS::new());
-    let file_name = "eternal.return";
-    let work_per_thread = TOTAL_WORKS / thread_counts;
-    let mut handles = Vec::new();
+    let work_per_thread = TOTAL_WORKS / thread_count;
+    let file_suffix = ".rs";
 
-    for i in 0..thread_counts {
-        let dir_name = std::fmt::format(format_args!("dir{}", i));
+    let mut open_workers = vec![];
 
-        arc_fs.mkdir(dir_name.as_str()).unwrap();
+    // Create files in directories.
+
+    for i in 0..thread_count {
+        let fs = arc_fs.clone();
+        let dir_name = format!("dir{}", i);
+
+        fs.mkdir(dir_name.as_str()).unwrap();
+
+        open_workers.push(thread::spawn(move || {
+            for j in 0..work_per_thread {
+                let file_name = format!("{}/{}{}", dir_name, j, file_suffix);
+
+                fs.open(file_name.as_str(), OpenFlag::O_CREAT | OpenFlag::O_RDWR).unwrap();
+            }
+        }));
     }
+
+    for handle in open_workers {
+        handle.join().unwrap();
+    }
+
+    let timer = Instant::now();
 
     /* Action */
 
-    for i in 0..thread_counts {
+    let mut handles = vec![];
+
+    for i in 0..thread_count {
         let fs = arc_fs.clone();
+        let dir_name = format!("dir{}", i);
 
         handles.push(thread::spawn(move || {
-            let mut open_success = 0;
+            let mut count = 0;
 
             for j in 0..work_per_thread {
-                let file_name = std::fmt::format(format_args!("dir{}/{}{}", i, j, file_name));
+                let file_name = format!("{}/{}{}", dir_name, j, file_suffix);
 
-                if fs.open(file_name.as_str(), OpenFlag::O_CREAT | OpenFlag::O_RDONLY).is_ok() {
-                    open_success += 1;
-                }
+                count += if fs.unlink(file_name.as_str()).is_ok() { 1 } else { 0 };
             }
 
-            open_success
+            count
         }));
     }
 
     let mut success_count = 0;
 
     for handle in handles {
-        success_count += handle.join().unwrap_or_else(|_| 0);
+        success_count += handle.join().unwrap();
     }
+
+    let measured = timer.elapsed().as_micros();
 
     /* Assert */
 
     assert_eq!(success_count, TOTAL_WORKS);
+
+
+    measured
 }
 
 #[test]
-#[ignore = "rewriting"]
-fn test_only_one_should_succeed_when_removing_file_multiple_times_concurrently() {
+fn test_only_one_should_succeed_when_removing_multiple_files_on_different_directory() {
     /* Arrange */
 
     let arc_fs = Arc::new(MemFS::new());
@@ -256,6 +304,7 @@ fn test_only_one_should_succeed_when_removing_file_multiple_times_concurrently()
 
     assert_eq!(success_count, 1);
 }
+
 
 #[test]
 #[ignore = "rewriting"]
