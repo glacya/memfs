@@ -2,6 +2,10 @@ use bitflags::bitflags;
 use rand::Rng;
 use std::fmt::Display;
 
+pub const FILE_MAX_SIZE: usize = 1 << 12;
+pub const THREAD_MAX_ID: usize = 1 << 8;
+pub const NUMBER_OF_MAXIMUM_FILES: usize = 1 << 10;
+
 bitflags! {
     #[derive(Clone)]
     pub struct OpenFlag: u32 {
@@ -69,6 +73,12 @@ pub enum MemFSErrType {
 
     /// Used when the target resource is used by other processes.
     EBUSY,
+
+    /// Used when the file is too big.
+    EFBIG,
+
+    /// Used when memory ran out.
+    ENOMEM,
 
     /// Miscellaneous
     Misc,
@@ -158,11 +168,28 @@ impl MemFSErr {
             err_type: MemFSErrType::EBUSY,
         }
     }
+
+    pub fn file_too_large() -> Self {
+        Self {
+            message: "File too large".to_string(),
+            err_type: MemFSErrType::EFBIG,
+        }
+    }
+    
+    pub fn out_of_memory() -> Self {
+        Self {
+            message: "Cannot allocate memory".to_string(),
+            err_type: MemFSErrType::ENOMEM,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, MemFSErr>;
 
 pub fn generate_random_vector(capacity: usize) -> Vec<u8> {
+    let mut output = vec![0u8; capacity];
     let mut rng = rand::rng();
-    (0..capacity).map(|_| rng.random::<u8>()).collect()
+    rng.fill(&mut output[..]);
+
+    output
 }

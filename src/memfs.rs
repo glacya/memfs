@@ -1,11 +1,16 @@
+use crossbeam::queue::ArrayQueue;
 use dashmap::{DashMap, Entry};
 
-use crate::utils::{MemFSErr, OpenFlag, Result, SeekFlag};
+use crate::utils::{MemFSErr, OpenFlag, Result, SeekFlag, FILE_MAX_SIZE, NUMBER_OF_MAXIMUM_FILES};
 use std::{
-    cell::UnsafeCell,
-    iter::Peekable,
-    sync::{Arc, Mutex, RwLock, Weak},
+    cell::UnsafeCell, iter::Peekable, sync::{atomic::{AtomicUsize, Ordering}, Arc, Mutex, Weak}
 };
+
+// static THREAD_ASSIGN: AtomicUsize = AtomicUsize::new(0);
+
+// thread_local! {
+//     static THREAD_ID: usize = THREAD_ASSIGN.fetch_add(1, Ordering::AcqRel);
+// }
 
 /// Implementation of In-Memory file system that supports the following system calls:
 /// [open], [close], [unlink], [read], [write], [lseek], [mkdir], [rmdir]
@@ -13,7 +18,8 @@ pub struct MemFS {
     root: Arc<MemFSEntry>,
     cwd_node: Arc<MemFSEntry>,
     file_descriptors: Arc<DashMap<usize, MemFSFileDescriptor>>,
-    file_descriptor_count: Arc<Mutex<usize>>,
+    file_descriptor_count: AtomicUsize,
+    file_memory: Arc<ArrayQueue<Vec<u8>>>,
 }
 
 unsafe impl Sync for MemFS {}
@@ -22,13 +28,19 @@ unsafe impl Send for MemFS {}
 impl MemFS {
     pub fn new() -> Self {
         let root = Arc::new(MemFSEntry::Directory(MemFSDirNode::new()));
+        let seg_queue = ArrayQueue::new(NUMBER_OF_MAXIMUM_FILES);
+
+        for _ in 0..NUMBER_OF_MAXIMUM_FILES {
+            seg_queue.push(vec![0; FILE_MAX_SIZE]).unwrap();
+        }
 
         Self {
             root: root.clone(),
             cwd_node: root,
             file_descriptors: Arc::new(DashMap::new()),
-            file_descriptor_count: Arc::new(Mutex::new(0)),
-        }
+            file_descriptor_count: AtomicUsize::new(0),
+            file_memory: Arc::new(seg_queue),
+        }   
     }
 
     pub fn open(&self, path: &str, flag: OpenFlag) -> Result<usize> {
@@ -43,8 +55,10 @@ impl MemFS {
         match self.resolve_dir_and_entry(last_elem, &*parent_node)? {
             Entry::Vacant(v) => {
                 if flag.contains(OpenFlag::O_CREAT) {
+                    
                     // If the entry is empty and O_CREAT is specified, add the file entry.
-                    let file_node = Arc::new(MemFSEntry::File(MemFSFileNode::new()));
+                    let memory_block = self.allocate_file_memory()?;
+                    let file_node = Arc::new(MemFSEntry::File(MemFSFileNode::new(memory_block)));
 
                     let fd = self.allocate_file_descriptor()?;
                     
@@ -176,8 +190,6 @@ impl MemFS {
     }
 
     pub fn chdir(&mut self, path: &str) -> Result<()> {
-        // println!("chdir({})", path);
-
         if path.is_empty() {
             return Err(MemFSErr::no_such_file_or_directory());
         } else if path == "/" {
@@ -191,8 +203,6 @@ impl MemFS {
             MemFSEntry::Directory(_) => {
                 self.cwd_node = dir_node.clone();
 
-                // println!("\tchdir to {:?}", Arc::as_ptr(&self.cwd_node));
-
                 Ok(())
             }
             MemFSEntry::ResolvedAsRoot => {
@@ -203,18 +213,6 @@ impl MemFS {
             _ => Err(MemFSErr::is_not_directory()),
         }
     }
-
-    // fn create(&self, path: &str, flag: OpenFlag) -> Result<()> {
-    //     let dir_node = self.get_parent_directory_node_of_given_path(path)?;
-    //     let last_elem = Self::get_last_component_of_path(path)?;
-    //     let dir_guard = dir_node.write().map_err(|_| MemFSErr::poisoned_lock())?;
-
-    //     match &*dir_guard {
-    //         MemFSEntry::Directory(dir) => dir.create_new_file(last_elem, flag),
-    //         MemFSEntry::File(_) => Err(MemFSErr::no_such_file_or_directory()),
-    //         MemFSEntry::ResolvedAsRoot => Err(MemFSErr::is_directory()),
-    //     }
-    // }
 
     fn path_str_to_iter(&self, path: &str) -> Result<Peekable<impl Iterator<Item = String>>> {
         if path.is_empty() {
@@ -238,15 +236,15 @@ impl MemFS {
             return Err(MemFSErr::no_such_file_or_directory());
         }
 
-        let vec: Vec<String> = path
+        let mut vec: Vec<String> = path
             .split("/")
             .filter(|x| *x != "" && *x != ".")
             .map(|x| x.to_string())
             .collect();
-        let iter_count = vec.len();
-        let path_iter = vec.into_iter();
+        
+        vec.pop();
 
-        Ok(path_iter.take(iter_count.saturating_sub(1)).peekable())
+        Ok(vec.into_iter().peekable())
     }
 
     fn is_absolute_path(path: &str) -> bool {
@@ -324,14 +322,7 @@ impl MemFS {
     }
 
     fn allocate_file_descriptor(&self) -> Result<usize> {
-        let mut guard = self
-            .file_descriptor_count
-            .lock()
-            .map_err(|_| MemFSErr::poisoned_lock())?;
-
-        let fd = *guard;
-        *guard += 1;
-
+        let fd = self.file_descriptor_count.fetch_add(1, Ordering::AcqRel);
         Ok(fd)
     }
 
@@ -347,6 +338,17 @@ impl MemFS {
                 }
             },
             MemFSEntry::File(_) => Err(MemFSErr::is_not_directory()),
+        }
+    }
+
+    /// Allocates file memory.
+    /// The implementation is very bad, but it can handle tests.
+    fn allocate_file_memory(&self) -> Result<Vec<u8>> {
+        if let Some(block) = self.file_memory.pop() {
+            Ok(block)
+        }
+        else {
+            Err(MemFSErr::out_of_memory())
         }
     }
 }
@@ -530,13 +532,20 @@ unsafe impl Sync for MemFSFileNode {}
 unsafe impl Send for MemFSFileNode {}
 
 pub struct MemFSFileNode {
-    value: UnsafeCell<Vec<u8>>,
+    size: AtomicUsize,
+    data: UnsafeCell<Vec<u8>>,
+    // page_cache: Arc<HashMap<usize, Vec<u8>>>,
 }
 
 impl MemFSFileNode {
-    pub fn new() -> Self {
+    pub fn new(space: Vec<u8>) -> Self {
+        // let iter = (0..THREAD_MAX_ID).map(|x| (x, ));
+        // let mut prepared_map = HashMap::from_iter(iter);
+
         Self {
-            value: UnsafeCell::new(vec![]),
+            size: AtomicUsize::new(0),
+            data: UnsafeCell::new(space),
+            // page_cache: Arc::new(prepared_map)
         }
     }
 }
@@ -553,7 +562,7 @@ pub enum MemFSEntry {
 struct MemFSFileDescriptor {
     _number: usize,
     flag: OpenFlag,
-    file_offset: Arc<RwLock<usize>>,
+    file_offset: AtomicUsize,
     entry: Arc<MemFSEntry>,
     append_mutex: Arc<Mutex<()>>,
 }
@@ -563,7 +572,7 @@ impl MemFSFileDescriptor {
         Self {
             _number: number,
             flag,
-            file_offset: Arc::new(RwLock::new(0)),
+            file_offset: AtomicUsize::new(0),
             entry,
             append_mutex: Arc::new(Mutex::new(())),
         }
@@ -575,19 +584,13 @@ impl MemFSFileDescriptor {
         }
 
         if let MemFSEntry::File(file) = &*self.entry {
-            let file_guard = file.value.get();
-
-            let offset_read_guard = self
-                .file_offset
-                .read()
-                .map_err(|_| MemFSErr::poisoned_lock())?;
-
-            let current_offset = *offset_read_guard;
-            drop(offset_read_guard);
+            let file_guard = file.data.get();
+            let current_offset = self.file_offset.load(Ordering::Acquire);
+            let file_size = file.size.load(Ordering::Relaxed);
 
             let content = unsafe { &*file_guard };
             let reading_length = ((current_offset).saturating_add(size))
-                .min(content.len())
+                .min(file_size)
                 .saturating_sub(current_offset);
 
             let slice_from_file =
@@ -599,12 +602,7 @@ impl MemFSFileDescriptor {
 
             buffer[0..reading_length].copy_from_slice(&slice_from_file);
 
-            let mut offset_write_guard = self
-                .file_offset
-                .write()
-                .map_err(|_| MemFSErr::poisoned_lock())?;
-
-            *offset_write_guard = (*offset_write_guard).saturating_add(reading_length);
+            self.file_offset.fetch_add(reading_length, Ordering::AcqRel);
 
             Ok(slice_from_file.len())
         } else {
@@ -618,80 +616,66 @@ impl MemFSFileDescriptor {
         }
 
         if let MemFSEntry::File(file) = &*self.entry {
-            let file_guard = file.value.get();
+            let file_guard = file.data.get();
             let file_content = unsafe { &mut *file_guard };
 
-            let lock = self
-                .append_mutex
-                .lock()
-                .map_err(|_| MemFSErr::poisoned_lock());
+            
+            if self.flag.contains(OpenFlag::O_APPEND) {
+                let _lock = self
+                    .append_mutex
+                    .lock()
+                    .map_err(|_| MemFSErr::poisoned_lock());
 
-            let current_offset = if self.flag.contains(OpenFlag::O_APPEND) {
-                let mut offset_write_guard = self
-                    .file_offset
-                    .write()
-                    .map_err(|_| MemFSErr::poisoned_lock())?;
+                let current_offset = file.size.load(Ordering::Acquire);
+                
+                let writing_content_size = size.min(buffer.len());
+                let expected_offset = current_offset.saturating_add(writing_content_size);
+                
+                if expected_offset > FILE_MAX_SIZE {
+                    return Err(MemFSErr::file_too_large());
+                }
 
-                let current_file_size = file_content.len();
+                // self.file_offset.store(current_offset, Ordering::Release);
 
-                *offset_write_guard = current_file_size;
-                drop(offset_write_guard);
+                file.size.store(expected_offset, Ordering::Release);
 
-                current_file_size
+                file_content[current_offset..expected_offset]
+                    .copy_from_slice(&buffer[0..writing_content_size]);
+
+                self.file_offset.store(expected_offset, Ordering::Release);
+
+                Ok(writing_content_size)
             } else {
-                drop(lock);
+                let current_offset = self.file_offset.load(Ordering::Acquire);
+                let writing_content_size = size.min(buffer.len());
+                let expected_offset = current_offset.saturating_add(writing_content_size);
 
-                let offset_read_guard = self
-                    .file_offset
-                    .read()
-                    .map_err(|_| MemFSErr::poisoned_lock())?;
+                if expected_offset > FILE_MAX_SIZE {
+                    return Err(MemFSErr::file_too_large());
+                }
 
-                let value = *offset_read_guard;
-                drop(offset_read_guard);
+                file.size.fetch_max(expected_offset, Ordering::Relaxed);
 
-                value
-            };
+                file_content[current_offset..expected_offset]
+                    .copy_from_slice(&buffer[0..writing_content_size]);
 
+                self.file_offset.store(expected_offset, Ordering::Release);
 
-            let writing_content_size = size.min(buffer.len());
-            let expected_offset = current_offset.saturating_add(writing_content_size);
-
-            if expected_offset > file_content.len() {
-                file_content.resize(expected_offset, 0);
+                Ok(writing_content_size)
             }
-
-            file_content[current_offset..expected_offset]
-                .copy_from_slice(&buffer[0..writing_content_size]);
-
-            let mut offset_write_guard = self
-                .file_offset
-                .write()
-                .map_err(|_| MemFSErr::poisoned_lock())?;
-
-            *offset_write_guard = expected_offset;
-
-            Ok(writing_content_size)
         } else {
             Err(MemFSErr::no_such_file_or_directory())
         }
     }
 
     unsafe fn seek_file(&self, seek_position: usize, flag: SeekFlag) -> Result<usize> {
-        let offset_guard = self
-            .file_offset
-            .read()
-            .map_err(|_| MemFSErr::poisoned_lock())?;
-
-        let current_offset = *offset_guard;
-
-        drop(offset_guard);
+        let current_offset = self.file_offset.load(Ordering::Acquire);
 
         let maximum_offset = if let MemFSEntry::File(file) = &*self.entry {
-            let inner_guard = file.value.get();
-
-            unsafe { &*inner_guard }.len()
-        } else {
-            return Err(MemFSErr::no_such_file_or_directory());
+            file.size.load(Ordering::Acquire)
+        }
+        else {
+            return Err(MemFSErr::is_directory())
         };
 
         let additional_offset = match flag {
@@ -700,13 +684,9 @@ impl MemFSFileDescriptor {
             SeekFlag::SEEK_SET => 0,
         };
 
-        let mut write_guard = self
-            .file_offset
-            .write()
-            .map_err(|_| MemFSErr::poisoned_lock())?;
+        let final_offset =  maximum_offset.min(additional_offset.saturating_add(seek_position));
+        self.file_offset.store(final_offset, Ordering::Release);
 
-        *write_guard = maximum_offset.min(additional_offset.saturating_add(seek_position));
-
-        Ok(*write_guard)
+        Ok(final_offset)
     }
 }
