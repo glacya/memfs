@@ -1,24 +1,25 @@
 use memfs::{
     memfs::MemFS,
-    utils::{generate_random_vector, OpenFlag, SeekFlag, FILE_MAX_SIZE},
+    utils::{FILE_MAX_SIZE, OpenFlag, SeekFlag, generate_random_vector},
 };
-// use rand::Rng;
 
-#[cfg(feature = "check-loom")]
-pub(crate) use loom::{sync::Arc, thread};
 use rand::Rng;
+use std::{
+    collections::HashMap,
+    fs::OpenOptions,
+    io::{BufWriter, Write},
+    time::Instant,
+};
 
-use std::{collections::HashMap, time::Instant};
-#[cfg(not(feature = "check-loom"))]
 pub(crate) use std::{sync::Arc, thread};
 
-const TOTAL_WORKS: usize = 1usize << 16;
+const TOTAL_WORKS: usize = 1usize << 14;
 
 macro_rules! test_throughput {
     ($name:ident, $func:expr) => {
         #[test]
         fn $name() {
-            throughput_reporter($func);
+            throughput_reporter($func, stringify!($name));
         }
     };
 }
@@ -29,15 +30,16 @@ macro_rules! test_throughput_ig {
         #[test]
         #[ignore]
         fn $name() {
-            throughput_reporter($func);
+            throughput_reporter($func, stringify!($name));
         }
     };
 }
 
-fn throughput_reporter<F>(f: F) where F: Fn(usize) -> u128 {
-    let iter = 0..8;
-    // let iter = std::iter::repeat(8).take(20);
-    let threads: Vec<usize> = iter.map(|x| 1usize << x).collect();
+fn throughput_reporter<F>(f: F, name: &'static str)
+where
+    F: Fn(usize) -> u128,
+{
+    let threads: Vec<usize> = (1..17).collect();
     let loop_per_count = 16;
     let mut time_elapsed = Vec::new();
 
@@ -48,43 +50,107 @@ fn throughput_reporter<F>(f: F) where F: Fn(usize) -> u128 {
             let measured = f(*i);
             avg += measured;
         }
-        
+
         time_elapsed.push(avg / loop_per_count);
     }
 
+    #[cfg(feature = "coarse-grained")]
+    let log_file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .create(true)
+        .open(format!("measurements/coarse/{}.csv", name))
+        .unwrap();
+
+    #[cfg(feature = "fine-grained")]
+    let log_file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(format!("measurements/fine/{}.csv", name))
+            .unwrap();
+        
+    #[cfg(feature = "lock-free")]
+    let log_file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .create(true)
+        .open(format!("measurements/lockfree/{}.csv", name))
+        .unwrap();
+
+    let mut writer = BufWriter::new(log_file);
+
     println!("\nResult\n|Threads|Time(us)|ops/s|\n|---|-----|-----|");
-    
+    writeln!(writer, "Threads,Time(us),ops/s").unwrap();
+
     for (i, thread_count) in threads.iter().enumerate() {
         let time_float = time_elapsed[i] as f64;
         let ops_per_second = 1000000.0 * (TOTAL_WORKS as f64) / time_float;
 
-        println!("|{}|{}|{:.2}|", thread_count, time_elapsed[i], ops_per_second);
+        println!(
+            "|{}|{}|{:.2}|",
+            thread_count, time_elapsed[i], ops_per_second
+        );
+        writeln!(
+            writer,
+            "{},{},{:.2}",
+            thread_count, time_elapsed[i], ops_per_second
+        )
+        .unwrap();
     }
 }
 
-test_throughput_ig!(test_throughput_measure_on_creates_on_same_directory, helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory);
-test_throughput_ig!(test_throughput_measure_on_creates_on_different_directory, helper_all_should_succeed_when_creating_multiple_files_on_different_directory);
+test_throughput!(
+    test_throughput_measure_on_creates_on_same_directory,
+    helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory
+);
+test_throughput!(
+    test_throughput_measure_on_creates_on_different_directory,
+    helper_all_should_succeed_when_creating_multiple_files_on_different_directory
+);
 test_throughput_ig!(test_throughput_measure_on_creates_with_o_excl_on_same_directory, helper_only_one_should_succeed_when_opening_file_with_o_creat_and_o_excl_concurrently_on_same_directory);
-test_throughput_ig!(test_throughput_measure_on_removes_on_different_directory, helper_all_should_succeed_when_removing_multiple_files_on_different_directory);
-test_throughput_ig!(test_throughput_measure_on_writes_on_single_file_descriptor_without_o_append, helper_all_should_succeed_when_writing_on_single_file_descriptor_without_o_append);
-test_throughput_ig!(test_throughput_measure_on_writes_on_single_file_descriptor_with_o_append, helper_check_whether_writes_on_file_descriptor_with_o_append_are_atomic);
+test_throughput_ig!(
+    test_throughput_measure_on_removes_on_different_directory,
+    helper_all_should_succeed_when_removing_multiple_files_on_different_directory
+);
+test_throughput_ig!(
+    test_throughput_measure_on_writes_on_single_file_descriptor_without_o_append,
+    helper_all_should_succeed_when_writing_on_single_file_descriptor_without_o_append
+);
+test_throughput_ig!(
+    test_throughput_measure_on_writes_on_single_file_descriptor_with_o_append,
+    helper_check_whether_writes_on_file_descriptor_with_o_append_are_atomic
+);
 test_throughput_ig!(test_throughput_measure_on_writes_on_multiple_file_descriptors_on_single_file_without_o_append, helper_all_should_succeed_when_writing_on_multiple_file_descriptors_on_single_file_without_o_append);
-test_throughput!(test_throughput_measure_on_writes_on_multiple_files_without_o_append, helper_all_should_succeed_when_writing_on_multiple_files_without_o_append);
-test_throughput!(test_throughput_measure_on_reads_on_single_file, helper_all_should_succeed_when_reading_from_single_file_through_multiple_file_descriptors);
-test_throughput!(test_throughput_measure_on_reads_and_writes_on_single_file, helper_all_should_succeed_when_read_and_write_from_single_file_through_multiple_file_descriptors);
-test_throughput!(test_throughput_measure_on_lseek_on_single_file_descriptor, helper_all_should_succeed_when_lseek_on_single_file_descriptor);
-test_throughput_ig!(test_throughput_measure_on_mkdir_on_same_directory, helper_all_should_succeed_when_mkdir_on_same_directory);
-test_throughput_ig!(test_throughput_measure_on_mkdir_on_different_directory, helper_all_should_succeed_when_mkdir_on_different_directory);
+test_throughput!(
+    test_throughput_measure_on_writes_on_multiple_files_without_o_append,
+    helper_all_should_succeed_when_writing_on_multiple_files_without_o_append
+);
+test_throughput!(
+    test_throughput_measure_on_reads_on_single_file,
+    helper_all_should_succeed_when_reading_from_single_file_through_multiple_file_descriptors
+);
+test_throughput_ig!(test_throughput_measure_on_reads_and_writes_on_single_file, helper_all_should_succeed_when_read_and_write_from_single_file_through_multiple_file_descriptors);
+test_throughput!(
+    test_throughput_measure_on_lseek_on_single_file_descriptor,
+    helper_all_should_succeed_when_lseek_on_single_file_descriptor
+);
+test_throughput_ig!(
+    test_throughput_measure_on_mkdir_on_same_directory,
+    helper_all_should_succeed_when_mkdir_on_same_directory
+);
+test_throughput_ig!(
+    test_throughput_measure_on_mkdir_on_different_directory,
+    helper_all_should_succeed_when_mkdir_on_different_directory
+);
 
-
-
-fn helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory(thread_count: usize) -> u128 {
-
+fn helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory(
+    thread_count: usize,
+) -> u128 {
     /* Arrange */
-    
+
     let arc_fs = Arc::new(MemFS::new());
     let file_prefix = "file";
-    let work_per_thread = TOTAL_WORKS / thread_count;
     let mut handles = Vec::new();
     let timer = Instant::now();
 
@@ -96,8 +162,18 @@ fn helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory
         handles.push(thread::spawn(move || {
             let mut count = 0;
 
+            let work_per_thread = if (TOTAL_WORKS % thread_count) > i {
+                TOTAL_WORKS / thread_count + 1
+            } else {
+                TOTAL_WORKS / thread_count
+            };
+
             for j in 0..work_per_thread {
-                let file_name = std::fmt::format(format_args!("{}{}.txt", file_prefix, j + i * work_per_thread));
+                let file_name = format!(
+                    "{}{}.txt",
+                    file_prefix,
+                    j + i * work_per_thread
+                );
 
                 let fd = fs.open(file_name.as_str(), OpenFlag::O_CREAT | OpenFlag::O_RDONLY);
 
@@ -106,18 +182,18 @@ fn helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory
 
                     // TODO: Close?
                 }
-            } 
+            }
 
             count
         }));
     }
-    
+
     let mut success_count = 0;
-    
+
     for handle in handles {
         success_count += handle.join().unwrap_or_else(|_| 0);
     }
-    
+
     let measured = timer.elapsed().as_micros();
 
     /* Assert */
@@ -127,21 +203,21 @@ fn helper_all_should_succeed_when_creating_multiple_file_names_on_same_directory
     measured
 }
 
-fn helper_all_should_succeed_when_creating_multiple_files_on_different_directory(thread_count: usize) -> u128 {
-
+fn helper_all_should_succeed_when_creating_multiple_files_on_different_directory(
+    thread_count: usize,
+) -> u128 {
     /* Arrange */
-    
+
     let arc_fs = Arc::new(MemFS::new());
     let file_name = "eternal.return";
-    let work_per_thread = TOTAL_WORKS / thread_count;
     let mut handles = Vec::new();
 
     for i in 0..thread_count {
         let dir_name = std::fmt::format(format_args!("dir{}", i));
-        
+
         arc_fs.mkdir(dir_name.as_str()).unwrap();
     }
-    
+
     let timer = Instant::now();
 
     /* Action */
@@ -152,10 +228,19 @@ fn helper_all_should_succeed_when_creating_multiple_files_on_different_directory
         handles.push(thread::spawn(move || {
             let mut open_success = 0;
 
+            let work_per_thread = if (TOTAL_WORKS % thread_count) > i {
+                TOTAL_WORKS / thread_count + 1
+            } else {
+                TOTAL_WORKS / thread_count
+            };
+
             for j in 0..work_per_thread {
                 let file_name = std::fmt::format(format_args!("dir{}/{}{}", i, j, file_name));
 
-                if fs.open(file_name.as_str(), OpenFlag::O_CREAT | OpenFlag::O_RDONLY).is_ok() {
+                if fs
+                    .open(file_name.as_str(), OpenFlag::O_CREAT | OpenFlag::O_RDONLY)
+                    .is_ok()
+                {
                     open_success += 1;
                 }
             }
@@ -179,8 +264,9 @@ fn helper_all_should_succeed_when_creating_multiple_files_on_different_directory
     measured
 }
 
-fn helper_only_one_should_succeed_when_opening_file_with_o_creat_and_o_excl_concurrently_on_same_directory(thread_count: usize) -> u128
- {
+fn helper_only_one_should_succeed_when_opening_file_with_o_creat_and_o_excl_concurrently_on_same_directory(
+    thread_count: usize,
+) -> u128 {
     /* Arrange */
 
     let arc_fs = Arc::new(MemFS::new());
@@ -205,8 +291,13 @@ fn helper_only_one_should_succeed_when_opening_file_with_o_creat_and_o_excl_conc
             let mut count = 0;
 
             for _ in 0..work_per_thread {
-                
-                if fs.open(file_name.as_str(), OpenFlag::O_CREAT | OpenFlag::O_EXCL | OpenFlag::O_RDWR).is_ok() {
+                if fs
+                    .open(
+                        file_name.as_str(),
+                        OpenFlag::O_CREAT | OpenFlag::O_EXCL | OpenFlag::O_RDWR,
+                    )
+                    .is_ok()
+                {
                     count += 1;
                 }
             }
@@ -230,8 +321,9 @@ fn helper_only_one_should_succeed_when_opening_file_with_o_creat_and_o_excl_conc
     measured
 }
 
-fn helper_all_should_succeed_when_removing_multiple_files_on_different_directory(thread_count: usize) -> u128 {
-
+fn helper_all_should_succeed_when_removing_multiple_files_on_different_directory(
+    thread_count: usize,
+) -> u128 {
     /* Arrange */
 
     let arc_fs = Arc::new(MemFS::new());
@@ -252,7 +344,8 @@ fn helper_all_should_succeed_when_removing_multiple_files_on_different_directory
             for j in 0..work_per_thread {
                 let file_name = format!("{}/{}{}", dir_name, j, file_suffix);
 
-                fs.open(file_name.as_str(), OpenFlag::O_CREAT | OpenFlag::O_RDWR).unwrap();
+                fs.open(file_name.as_str(), OpenFlag::O_CREAT | OpenFlag::O_RDWR)
+                    .unwrap();
             }
         }));
     }
@@ -277,7 +370,11 @@ fn helper_all_should_succeed_when_removing_multiple_files_on_different_directory
             for j in 0..work_per_thread {
                 let file_name = format!("{}/{}{}", dir_name, j, file_suffix);
 
-                count += if fs.unlink(file_name.as_str()).is_ok() { 1 } else { 0 };
+                count += if fs.unlink(file_name.as_str()).is_ok() {
+                    1
+                } else {
+                    0
+                };
             }
 
             count
@@ -295,7 +392,6 @@ fn helper_all_should_succeed_when_removing_multiple_files_on_different_directory
     /* Assert */
 
     assert_eq!(success_count, TOTAL_WORKS);
-
 
     measured
 }
@@ -336,9 +432,9 @@ fn test_correctness_only_one_should_succeed_when_removing_multiple_files_on_diff
     assert_eq!(success_count, 1);
 }
 
-
-fn helper_check_whether_writes_on_file_descriptor_with_o_append_are_atomic(thread_count: usize) -> u128 {
-
+fn helper_check_whether_writes_on_file_descriptor_with_o_append_are_atomic(
+    thread_count: usize,
+) -> u128 {
     /* Arrange */
 
     let arc_fs = Arc::new(MemFS::new());
@@ -348,11 +444,11 @@ fn helper_check_whether_writes_on_file_descriptor_with_o_append_are_atomic(threa
     let file_name = "conc.write";
 
     let fd = arc_fs
-    .open(
-        file_name,
-        OpenFlag::O_CREAT | OpenFlag::O_RDWR | OpenFlag::O_APPEND,
-    )
-    .unwrap();
+        .open(
+            file_name,
+            OpenFlag::O_CREAT | OpenFlag::O_RDWR | OpenFlag::O_APPEND,
+        )
+        .unwrap();
 
     let mut handles = Vec::new();
     let timer = Instant::now();
@@ -369,7 +465,7 @@ fn helper_check_whether_writes_on_file_descriptor_with_o_append_are_atomic(threa
             for _ in 0..work_per_thread {
                 let numbered_buffer = vec![value; buffer_size];
                 // let mut rng = rand::rng();
-    
+
                 // This lseek should show no effect, since the file is opened with O_APPEND.
                 // fs.lseek(
                 //     fd,
@@ -385,7 +481,7 @@ fn helper_check_whether_writes_on_file_descriptor_with_o_append_are_atomic(threa
     for handle in handles {
         handle.join().unwrap();
     }
-    
+
     let measured = timer.elapsed().as_micros();
 
     /* Assert */
@@ -433,8 +529,9 @@ fn helper_check_whether_writes_on_file_descriptor_with_o_append_are_atomic(threa
     measured
 }
 
-fn helper_all_should_succeed_when_writing_on_single_file_descriptor_without_o_append(thread_count: usize) -> u128 {
-
+fn helper_all_should_succeed_when_writing_on_single_file_descriptor_without_o_append(
+    thread_count: usize,
+) -> u128 {
     /* Arrange */
 
     let total_work_this = TOTAL_WORKS;
@@ -444,7 +541,9 @@ fn helper_all_should_succeed_when_writing_on_single_file_descriptor_without_o_ap
     let file_name = "/food.food";
     let mut handles = Vec::new();
 
-    let fd = arc_fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_RDWR).unwrap();
+    let fd = arc_fs
+        .open(file_name, OpenFlag::O_CREAT | OpenFlag::O_RDWR)
+        .unwrap();
     let timer = Instant::now();
 
     /* Action */
@@ -476,8 +575,9 @@ fn helper_all_should_succeed_when_writing_on_single_file_descriptor_without_o_ap
     measured
 }
 
-fn helper_all_should_succeed_when_writing_on_multiple_file_descriptors_on_single_file_without_o_append(thread_count: usize) -> u128 {
-
+fn helper_all_should_succeed_when_writing_on_multiple_file_descriptors_on_single_file_without_o_append(
+    thread_count: usize,
+) -> u128 {
     /* Arrange */
 
     let arc_fs = Arc::new(MemFS::new());
@@ -486,15 +586,17 @@ fn helper_all_should_succeed_when_writing_on_multiple_file_descriptors_on_single
     let file_name = "mul.file";
     let mut handles = Vec::new();
 
-    let init_fd = arc_fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_RDWR).unwrap();
+    let init_fd = arc_fs
+        .open(file_name, OpenFlag::O_CREAT | OpenFlag::O_RDWR)
+        .unwrap();
     arc_fs.close(init_fd).unwrap();
 
     let mut fds = Vec::new();
-    
+
     for _ in 0..thread_count {
         fds.push(arc_fs.open(file_name, OpenFlag::O_RDWR).unwrap());
     }
-    
+
     /* Action */
     let timer = Instant::now();
 
@@ -533,12 +635,13 @@ fn helper_all_should_succeed_when_writing_on_multiple_file_descriptors_on_single
     measured
 }
 
-fn helper_all_should_succeed_when_writing_on_multiple_files_without_o_append(thread_count: usize) -> u128 {
-    
+fn helper_all_should_succeed_when_writing_on_multiple_files_without_o_append(
+    thread_count: usize,
+) -> u128 {
     /* Arrange */
 
     let arc_fs = Arc::new(MemFS::new());
-    let work_per_thread = TOTAL_WORKS / thread_count;
+    // let work_per_thread = TOTAL_WORKS / thread_count;
     let buffer_size = FILE_MAX_SIZE;
     let file_prefix = "go_home";
     let mut handles = Vec::new();
@@ -547,7 +650,9 @@ fn helper_all_should_succeed_when_writing_on_multiple_files_without_o_append(thr
     for i in 0..thread_count {
         let file_name = format!("{}{}.txt", file_prefix, i);
 
-        let fd = arc_fs.open(file_name.as_str(), OpenFlag::O_CREAT | OpenFlag::O_RDWR).unwrap();
+        let fd = arc_fs
+            .open(file_name.as_str(), OpenFlag::O_CREAT | OpenFlag::O_RDWR)
+            .unwrap();
         fds.push(fd);
     }
 
@@ -559,10 +664,16 @@ fn helper_all_should_succeed_when_writing_on_multiple_files_without_o_append(thr
     for i in 0..thread_count {
         let fs = arc_fs.clone();
         let fd = fds[i];
-        
+
         handles.push(thread::spawn(move || {
             let mut written = 0;
             let write_buffer = vec![10u8; buffer_size];
+
+            let work_per_thread = if (TOTAL_WORKS % thread_count) > i {
+                TOTAL_WORKS / thread_count + 1
+            } else {
+                TOTAL_WORKS / thread_count
+            };
 
             for _ in 0..work_per_thread {
                 fs.lseek(fd, 0, SeekFlag::SEEK_SET).unwrap();
@@ -592,20 +703,25 @@ fn helper_all_should_succeed_when_writing_on_multiple_files_without_o_append(thr
     measured
 }
 
-fn helper_all_should_succeed_when_reading_from_single_file_through_multiple_file_descriptors(thread_count: usize) -> u128 {
-     
+fn helper_all_should_succeed_when_reading_from_single_file_through_multiple_file_descriptors(
+    thread_count: usize,
+) -> u128 {
     /* Arrange */
 
     let arc_fs = Arc::new(MemFS::new());
-    let work_per_thread = TOTAL_WORKS / thread_count;
+    // let work_per_thread = TOTAL_WORKS / thread_count;
     let buffer_size = FILE_MAX_SIZE;
     let file_name = "readers.txt";
     let mut handles = Vec::new();
     let mut fds = Vec::new();
 
     let random_vector = generate_random_vector(buffer_size);
-    let init_fd = arc_fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_WRONLY).unwrap();
-    arc_fs.write(init_fd, &random_vector, FILE_MAX_SIZE).unwrap();
+    let init_fd = arc_fs
+        .open(file_name, OpenFlag::O_CREAT | OpenFlag::O_WRONLY)
+        .unwrap();
+    arc_fs
+        .write(init_fd, &random_vector, FILE_MAX_SIZE)
+        .unwrap();
     arc_fs.close(init_fd).unwrap();
 
     for _ in 0..thread_count {
@@ -621,10 +737,16 @@ fn helper_all_should_succeed_when_reading_from_single_file_through_multiple_file
     for i in 0..thread_count {
         let fs = arc_fs.clone();
         let fd = fds[i];
-        
+
         handles.push(thread::spawn(move || {
             let mut read_success = 0;
             let mut read_buffer = vec![0; FILE_MAX_SIZE];
+
+            let work_per_thread = if (TOTAL_WORKS % thread_count) > i {
+                TOTAL_WORKS / thread_count + 1
+            } else {
+                TOTAL_WORKS / thread_count
+            };
 
             for _ in 0..work_per_thread {
                 fs.lseek(fd, 0, SeekFlag::SEEK_SET).unwrap();
@@ -654,8 +776,9 @@ fn helper_all_should_succeed_when_reading_from_single_file_through_multiple_file
     measured
 }
 
-fn helper_all_should_succeed_when_read_and_write_from_single_file_through_multiple_file_descriptors(thread_count: usize) -> u128 {
-         
+fn helper_all_should_succeed_when_read_and_write_from_single_file_through_multiple_file_descriptors(
+    thread_count: usize,
+) -> u128 {
     /* Arrange */
 
     let arc_fs = Arc::new(MemFS::new());
@@ -666,8 +789,12 @@ fn helper_all_should_succeed_when_read_and_write_from_single_file_through_multip
     let mut fds = Vec::new();
 
     let random_vector = generate_random_vector(buffer_size);
-    let init_fd = arc_fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_WRONLY).unwrap();
-    arc_fs.write(init_fd, &random_vector, FILE_MAX_SIZE).unwrap();
+    let init_fd = arc_fs
+        .open(file_name, OpenFlag::O_CREAT | OpenFlag::O_WRONLY)
+        .unwrap();
+    arc_fs
+        .write(init_fd, &random_vector, FILE_MAX_SIZE)
+        .unwrap();
     arc_fs.close(init_fd).unwrap();
 
     for _ in 0..thread_count {
@@ -683,7 +810,7 @@ fn helper_all_should_succeed_when_read_and_write_from_single_file_through_multip
     for i in 0..thread_count {
         let fs = arc_fs.clone();
         let fd = fds[i];
-        
+
         handles.push(thread::spawn(move || {
             let mut read_success = 0;
             let mut read_buffer = vec![0; FILE_MAX_SIZE];
@@ -724,28 +851,35 @@ fn helper_all_should_succeed_when_read_and_write_from_single_file_through_multip
 }
 
 fn helper_all_should_succeed_when_lseek_on_single_file_descriptor(thread_count: usize) -> u128 {
-             
     /* Arrange */
 
     let arc_fs = Arc::new(MemFS::new());
-    let work_per_thread = TOTAL_WORKS / thread_count;
+    // let work_per_thread = TOTAL_WORKS / thread_count;
     let buffer_size = FILE_MAX_SIZE;
     let file_name = "mouse.heejun";
     let mut handles = Vec::new();
 
     let random_vector = generate_random_vector(buffer_size);
-    let fd = arc_fs.open(file_name, OpenFlag::O_CREAT | OpenFlag::O_WRONLY).unwrap();
+    let fd = arc_fs
+        .open(file_name, OpenFlag::O_CREAT | OpenFlag::O_WRONLY)
+        .unwrap();
     arc_fs.write(fd, &random_vector, FILE_MAX_SIZE).unwrap();
 
     let timer = Instant::now();
 
     /* Action */
 
-    for _ in 0..thread_count {
+    for i in 0..thread_count {
         let fs = arc_fs.clone();
-        
+
         handles.push(thread::spawn(move || {
             let mut lseek_success = 0;
+
+            let work_per_thread = if (TOTAL_WORKS % thread_count) > i {
+                TOTAL_WORKS / thread_count + 1
+            } else {
+                TOTAL_WORKS / thread_count
+            };
 
             for _ in 0..work_per_thread {
                 let r = rand::rng().random_range(0..FILE_MAX_SIZE);
@@ -775,9 +909,8 @@ fn helper_all_should_succeed_when_lseek_on_single_file_descriptor(thread_count: 
 }
 
 fn helper_all_should_succeed_when_mkdir_on_same_directory(thread_count: usize) -> u128 {
-    
     /* Arrange */
-    
+
     let arc_fs = Arc::new(MemFS::new());
     let dir_prefix = "dir";
     let work_per_thread = TOTAL_WORKS / thread_count;
@@ -785,7 +918,6 @@ fn helper_all_should_succeed_when_mkdir_on_same_directory(thread_count: usize) -
     let timer = Instant::now();
 
     /* Action */
-
 
     for i in 0..thread_count {
         let fs = arc_fs.clone();
@@ -801,18 +933,18 @@ fn helper_all_should_succeed_when_mkdir_on_same_directory(thread_count: usize) -
                 if mkdir_result.is_ok() {
                     count += 1;
                 }
-            } 
+            }
 
             count
         }));
     }
-    
+
     let mut success_count = 0;
-    
+
     for handle in handles {
         success_count += handle.join().unwrap_or_else(|_| 0);
     }
-    
+
     let measured = timer.elapsed().as_micros();
 
     /* Assert */
@@ -823,9 +955,8 @@ fn helper_all_should_succeed_when_mkdir_on_same_directory(thread_count: usize) -
 }
 
 fn helper_all_should_succeed_when_mkdir_on_different_directory(thread_count: usize) -> u128 {
-
     /* Arrange */
-    
+
     let arc_fs = Arc::new(MemFS::new());
     let dir_suffix = "cs999";
     let work_per_thread = TOTAL_WORKS / thread_count;
@@ -833,10 +964,10 @@ fn helper_all_should_succeed_when_mkdir_on_different_directory(thread_count: usi
 
     for i in 0..thread_count {
         let dir_name = std::fmt::format(format_args!("dir{}", i));
-        
+
         arc_fs.mkdir(dir_name.as_str()).unwrap();
     }
-    
+
     let timer = Instant::now();
 
     /* Action */
@@ -849,7 +980,7 @@ fn helper_all_should_succeed_when_mkdir_on_different_directory(thread_count: usi
 
             for j in 0..work_per_thread {
                 let dir_name = format!("dir{}/{}{}", i, j, dir_suffix);
-                
+
                 if fs.mkdir(dir_name.as_str()).is_ok() {
                     mkdir_success += 1;
                 }

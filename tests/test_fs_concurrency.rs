@@ -1,8 +1,14 @@
 // Benchmarking platform FS.
 
-use std::{fs::{self, OpenOptions}, io::{Read, Write}, path::Path, thread, time::Instant};
+use std::{
+    fs::{self, OpenOptions},
+    io::{Read, Write},
+    path::Path,
+    thread,
+    time::Instant,
+};
 
-use memfs::utils::{generate_random_vector, FILE_MAX_SIZE};
+use memfs::utils::{FILE_MAX_SIZE, generate_random_vector};
 
 const TOTAL_WORKS: usize = 1usize << 16;
 
@@ -27,7 +33,10 @@ macro_rules! test_throughput_ig {
     };
 }
 
-fn throughput_reporter<F>(f: F) where F: Fn(usize) -> u128 {
+fn throughput_reporter<F>(f: F)
+where
+    F: Fn(usize) -> u128,
+{
     let iter = 0..7;
     // let iter = std::iter::repeat(8).take(20);
     let threads: Vec<usize> = iter.map(|x| 1usize << x).collect();
@@ -47,29 +56,39 @@ fn throughput_reporter<F>(f: F) where F: Fn(usize) -> u128 {
             fs::remove_dir_all(test_path).unwrap();
             fs::create_dir(test_path).unwrap();
         }
-        
+
         time_elapsed.push(avg / loop_count);
     }
 
     println!("\nResult\n|Threads|Time(us)|ops/s|\n|---|-----|-----|");
-    
+
     for (i, thread_count) in threads.iter().enumerate() {
         let time_float = time_elapsed[i] as f64;
         let ops_per_second = 1000000.0 * (TOTAL_WORKS as f64) / time_float;
 
-        println!("|{}|{}|{:.2}|", thread_count, time_elapsed[i], ops_per_second);
+        println!(
+            "|{}|{}|{:.2}|",
+            thread_count, time_elapsed[i], ops_per_second
+        );
     }
 }
 
-test_throughput_ig!(test_throughput_measure_on_creates_on_different_directory, helper_fs_creates_on_different_directory);
-test_throughput_ig!(test_throughput_measure_on_reads_on_single_file_with_multiple_descriptors, helper_fs_reads_from_single_file_through_multiple_file_descriptors);
-test_throughput_ig!(test_throughput_measure_on_writes_on_multiple_files, helper_fs_writes_on_multiple_files_without_o_append);
-
+test_throughput_ig!(
+    test_throughput_measure_on_creates_on_different_directory,
+    helper_fs_creates_on_different_directory
+);
+test_throughput_ig!(
+    test_throughput_measure_on_reads_on_single_file_with_multiple_descriptors,
+    helper_fs_reads_from_single_file_through_multiple_file_descriptors
+);
+test_throughput_ig!(
+    test_throughput_measure_on_writes_on_multiple_files,
+    helper_fs_writes_on_multiple_files_without_o_append
+);
 
 fn helper_fs_creates_on_different_directory(thread_count: usize) -> u128 {
-
     /* Arrange */
-    
+
     let file_name = "eternal.return";
     let work_per_thread = TOTAL_WORKS / thread_count;
     let mut handles = Vec::new();
@@ -79,7 +98,7 @@ fn helper_fs_creates_on_different_directory(thread_count: usize) -> u128 {
 
         fs::create_dir(Path::new(dir_name.as_str())).unwrap();
     }
-    
+
     let timer = Instant::now();
 
     /* Action */
@@ -92,7 +111,11 @@ fn helper_fs_creates_on_different_directory(thread_count: usize) -> u128 {
                 let file_name = std::fmt::format(format_args!("ex/dir{}/{}{}", i, j, file_name));
                 let path = Path::new(file_name.as_str());
 
-                let result = OpenOptions::new().read(true).write(true).create(true).open(path);
+                let result = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(path);
 
                 if result.is_ok() {
                     open_success += 1;
@@ -119,7 +142,6 @@ fn helper_fs_creates_on_different_directory(thread_count: usize) -> u128 {
 }
 
 fn helper_fs_reads_from_single_file_through_multiple_file_descriptors(thread_count: usize) -> u128 {
-     
     /* Arrange */
 
     let work_per_thread = TOTAL_WORKS / thread_count;
@@ -130,7 +152,11 @@ fn helper_fs_reads_from_single_file_through_multiple_file_descriptors(thread_cou
     let mut fds = Vec::new();
 
     let random_vector = generate_random_vector(buffer_size);
-    let mut file = OpenOptions::new().write(true).create(true).open(file_name).unwrap();
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(file_name)
+        .unwrap();
     file.write(random_vector.as_slice()).unwrap();
 
     drop(file);
@@ -176,7 +202,6 @@ fn helper_fs_reads_from_single_file_through_multiple_file_descriptors(thread_cou
 }
 
 fn helper_fs_writes_on_multiple_files_without_o_append(thread_count: usize) -> u128 {
-    
     /* Arrange */
 
     let buffer_size = 4096;
@@ -186,7 +211,12 @@ fn helper_fs_writes_on_multiple_files_without_o_append(thread_count: usize) -> u
 
     for i in 0..thread_count {
         let file_name = format!("ex/{}{}.txt", file_prefix, i);
-        let fd = OpenOptions::new().read(true).write(true).create(true).open(file_name).unwrap();
+        let fd = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(file_name)
+            .unwrap();
 
         fds.push(fd);
     }

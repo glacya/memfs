@@ -4,7 +4,7 @@ use std::fmt::Display;
 
 pub const FILE_MAX_SIZE: usize = 1 << 12;
 pub const THREAD_MAX_ID: usize = 1 << 8;
-pub const NUMBER_OF_MAXIMUM_FILES: usize = 1 << 10;
+pub const NUMBER_OF_MAXIMUM_FILES: usize = 1 << 14;
 
 bitflags! {
     #[derive(Clone)]
@@ -175,7 +175,7 @@ impl MemFSErr {
             err_type: MemFSErrType::EFBIG,
         }
     }
-    
+
     pub fn out_of_memory() -> Self {
         Self {
             message: "Cannot allocate memory".to_string(),
